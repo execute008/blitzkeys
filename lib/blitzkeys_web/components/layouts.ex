@@ -24,12 +24,21 @@ defmodule BlitzkeysWeb.Layouts do
         <h1>Content</h1>
       </Layouts.app>
 
+      # Full width variant (for game view)
+      <Layouts.app flash={@flash} full_width>
+        <h1>Content</h1>
+      </Layouts.app>
+
   """
   attr :flash, :map, required: true, doc: "the map of flash messages"
 
   attr :current_scope, :map,
     default: nil,
     doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
+
+  attr :full_width, :boolean,
+    default: false,
+    doc: "whether to use full width layout (for game view)"
 
   slot :inner_block, required: true
 
@@ -62,8 +71,11 @@ defmodule BlitzkeysWeb.Layouts do
       </div>
     </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
+    <main class={["px-4 sm:px-6 lg:px-8", if(@full_width, do: "py-8", else: "py-20")]}>
+      <div class={[
+        "mx-auto space-y-4",
+        unless(@full_width, do: "max-w-2xl")
+      ]}>
         {render_slot(@inner_block)}
       </div>
     </main>
