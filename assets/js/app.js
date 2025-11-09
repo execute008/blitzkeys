@@ -30,9 +30,9 @@ const TypingInput = {
   mounted() {
     this.el.focus()
     
-    // Handle keydown for spacebar validation
+    // Handle keydown for spacebar and Enter key validation
     this.el.addEventListener("keydown", (e) => {
-      if (e.key === " " && this.el.value.trim() !== "") {
+      if ((e.key === " " || e.key === "Enter") && this.el.value.trim() !== "") {
         e.preventDefault()
         
         // Send word for validation
