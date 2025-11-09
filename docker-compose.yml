@@ -6,7 +6,7 @@ services:
     image: blitzkeys:0.1.0
     container_name: blitzkeys_app
     ports:
-      - "4000:4000"
+      - "36927:4000"
     env_file:
       - config/docker.env
     depends_on:

@@ -61,7 +61,10 @@ docker-compose down
    mix phx.gen.secret
    ```
 
-3. Update `config/docker.env` with your production values
+3. Update `config/docker.env` with your production values:
+   - Set `PHX_HOST` to your production domain
+   - Keep `PORT=4000` (internal container port)
+   - External port is configured in `docker-compose.yml` (default: 36927)
 
 ### Production Deployment
 
