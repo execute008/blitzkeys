@@ -18,6 +18,7 @@ defmodule BlitzkeysWeb.Router do
     pipe_through :browser
 
     live "/", HomeLive
+    live "/rooms", PublicRoomsLive
     live "/room/:code", RoomLive
   end
 

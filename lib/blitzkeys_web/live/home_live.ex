@@ -80,6 +80,23 @@ defmodule BlitzkeysWeb.HomeLive do
             </div>
           </div>
 
+          <%!-- Browse Public Rooms --%>
+          <div class="mt-12">
+            <.link
+              navigate={~p"/rooms"}
+              class="card bg-gradient-to-r from-primary to-secondary hover:shadow-2xl transition-all cursor-pointer"
+            >
+              <div class="card-body text-center">
+                <h2 class="card-title text-2xl justify-center text-white">
+                  <.icon name="hero-users" class="w-8 h-8" /> Browse Public Rooms
+                </h2>
+                <p class="text-white/90">
+                  Join an existing game and compete with other players
+                </p>
+              </div>
+            </.link>
+          </div>
+
           <%!-- Features --%>
           <div class="mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
             <div>
