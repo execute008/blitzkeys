@@ -19,14 +19,14 @@ COPY config config
 RUN mix deps.get --only $MIX_ENV
 RUN mix deps.compile
 
-# Build assets
+# Build project FIRST - this generates phoenix-colocated hooks
+COPY lib lib
+RUN mix compile
+
+# Build assets AFTER - now phoenix-colocated is available
 COPY assets assets
 COPY priv priv
 RUN mix assets.deploy
-
-# Build project
-COPY lib lib
-RUN mix compile
 
 # Build release
 RUN mix release
