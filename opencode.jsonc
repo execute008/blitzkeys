@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [".github/copilot-instructions.md"],
+  "theme": "matrix",
+  "provider": {
+    "anthropic": {
+      "models": {
+        "claude-sonnet-4-5-20250929": {
+          "options": {
+            "thinking": {
+              "type": "enabled",
+              "budgetTokens": 16000,
+            },
+          },
+        },
+        "claude-sonnet-4-5": {
+          "options": {
+            "thinking": {
+              "type": "enabled",
+              "budgetTokens": 16000,
+            },
+          },
+        },
+      },
+    },
+  },
+  "permission": {
+    "edit": "allow",
+    "webfetch": "allow",
+    "bash": {
+      "rm -rf /": "deny",
+      "rm -rf *": "deny",
+      "shutdown": "deny",
+      "reboot": "deny",
+      "mkfs*": "deny",
+      "dd*": "deny",
+      "pnpm sst deploy": "deny",
+      "sst deploy": "deny",
+      "npm run sst deploy": "deny",
+      "chmod 777": "ask",
+      "chown": "ask",
+
+      "drop database*": "ask",
+      "drop table*": "ask",
+      "psql* -c 'DROP": "ask",
+      "mysql* -e 'DROP": "ask",
+
+      "git push": "ask",
+      "git reset --hard": "ask",
+      "git clean -fdx": "ask",
+
+      "curl": "ask",
+      "wget": "ask",
+      "scp": "ask",
+      "rsync": "ask",
+
+      "*": "allow"
+    }
+  }
+}
