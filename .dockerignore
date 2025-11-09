@@ -38,5 +38,6 @@ erl_crash.dump
 /cover
 /test/**/*.beam
 
-# Build artifacts
-priv/static
+# Build artifacts (but keep images and other static assets)
+priv/static/assets/
+priv/static/cache_manifest.json

@@ -28,17 +28,8 @@ COPY assets assets
 COPY priv priv
 RUN mix assets.deploy
 
-# Verify static files and cache manifest were created
-RUN ls -la priv/static/
-RUN ls -la priv/static/images/ || echo "No images directory"
-RUN test -f priv/static/cache_manifest.json && echo "cache_manifest.json exists" || echo "cache_manifest.json MISSING"
-
 # Build release
 RUN mix release
-
-# Verify release includes static files
-RUN ls -la _build/prod/rel/blitzkeys/lib/blitzkeys-*/priv/static/ || echo "Static files not in release"
-RUN ls -la _build/prod/rel/blitzkeys/lib/blitzkeys-*/priv/static/images/ || echo "Images not in release"
 
 # App stage
 FROM alpine:3.18 AS app

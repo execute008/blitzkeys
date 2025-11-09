@@ -85,9 +85,13 @@ defmodule Blitzkeys.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind blitzkeys", "esbuild blitzkeys"],
       "assets.deploy": [
+        "assets.copy_images",
         "tailwind blitzkeys --minify",
         "esbuild blitzkeys --minify",
         "phx.digest"
+      ],
+      "assets.copy_images": [
+        "cmd mkdir -p priv/static/images && cp -r assets/img/* priv/static/images/"
       ],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
     ]
@@ -97,8 +101,18 @@ defmodule Blitzkeys.MixProject do
     [
       blitzkeys: [
         include_executables_for: [:unix],
-        steps: [:assemble, :tar]
+        applications: [runtime_tools: :permanent],
+        steps: [:assemble, &copy_static_files/1, :tar]
       ]
     ]
+  end
+
+  defp copy_static_files(release) do
+    File.cp_r!(
+      "priv/static",
+      Path.join([release.path, "lib", "blitzkeys-#{release.version}", "priv", "static"])
+    )
+
+    release
   end
 end
