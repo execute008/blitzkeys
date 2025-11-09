@@ -1,0 +1,349 @@
+defmodule Blitzkeys.Rooms.Room do
+  @moduledoc """
+  GenServer that manages the state of a single typing game room.
+
+  State machine flow:
+  :lobby -> :countdown -> :playing -> :results -> :lobby (or terminate)
+
+  Responsibilities:
+  - Track connected players
+  - Manage game configuration (language, rounds, scoring)
+  - Coordinate game state transitions
+  - Broadcast updates via PubSub
+  """
+  use GenServer
+  require Logger
+
+  alias Phoenix.PubSub
+  alias Blitzkeys.TextGenerator
+  alias BlitzkeysWeb.Presence
+
+  @idle_timeout :timer.hours(1)
+
+  # Client API
+
+  def start_link({code, settings}) do
+    GenServer.start_link(__MODULE__, {code, settings}, name: via_tuple(code))
+  end
+
+  @doc "Returns the PID for a room code, or nil if not found"
+  def whereis(code) do
+    case Registry.lookup(Blitzkeys.Rooms.Registry, code) do
+      [{pid, _}] -> pid
+      [] -> nil
+    end
+  end
+
+  @doc "Gets the current state of the room"
+  def get_state(code) do
+    code |> via_tuple() |> GenServer.call(:get_state)
+  end
+
+  @doc "Updates room settings (only allowed in lobby state)"
+  def update_settings(code, settings) do
+    code |> via_tuple() |> GenServer.call({:update_settings, settings})
+  end
+
+  @doc "Starts the game countdown"
+  def start_game(code) do
+    code |> via_tuple() |> GenServer.call(:start_game)
+  end
+
+  @doc "Validates a typed word and updates player progress"
+  def validate_word(code, player_id, typed_word) do
+    code |> via_tuple() |> GenServer.call({:validate_word, player_id, typed_word})
+  end
+
+  @doc "Gets current game time remaining"
+  def get_time_remaining(code) do
+    code |> via_tuple() |> GenServer.call(:get_time_remaining)
+  end
+
+  # Server Callbacks
+
+  @impl true
+  def init({code, settings}) do
+    state = %{
+      code: code,
+      status: :lobby,
+      settings: default_settings(settings),
+      players: %{},
+      current_text: nil,
+      round: 0,
+      scores: %{},
+      started_at: nil,
+      timer_ref: nil,
+      time_remaining: nil
+    }
+
+    Logger.info("Room #{code} created")
+    {:ok, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:update_settings, new_settings}, _from, %{status: :lobby} = state) do
+    updated_settings = Map.merge(state.settings, new_settings)
+    new_state = %{state | settings: updated_settings}
+
+    broadcast(state.code, {:settings_updated, updated_settings})
+    {:reply, {:ok, updated_settings}, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:update_settings, _}, _from, state) do
+    {:reply, {:error, :game_in_progress}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:start_game, _from, %{status: :lobby} = state) do
+    # Get current players from Presence
+    players =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> Enum.into(%{}, fn {id, _data} -> {id, %{}} end)
+
+    if map_size(players) < 2 do
+      {:reply, {:error, :not_enough_players}, state, @idle_timeout}
+    else
+      # Generate text based on settings
+      text = generate_text(state.settings)
+
+      # Initialize player tracking with word-based progress
+      players_with_progress =
+        Enum.into(players, %{}, fn {id, _} ->
+          {id, %{current_word_index: 0, correct_words: [], incorrect_words: []}}
+        end)
+
+      new_state = %{
+        state
+        | status: :countdown,
+          current_text: text,
+          round: state.round + 1,
+          players: players_with_progress,
+          timer_ref: nil,
+          time_remaining: state.settings.timer_seconds
+      }
+
+      broadcast(state.code, {:game_starting, %{countdown: 3}})
+      schedule_countdown(state.code)
+
+      {:reply, :ok, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call(:start_game, _from, state) do
+    {:reply, {:error, :game_already_started}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:validate_word, player_id, typed_word}, _from, %{status: :playing} = state) do
+    player = state.players[player_id]
+
+    if player do
+      current_index = player.current_word_index
+      correct_word = Enum.at(state.current_text, current_index)
+
+      is_correct = typed_word == correct_word
+
+      updated_player =
+        if is_correct do
+          %{
+            player
+            | current_word_index: current_index + 1,
+              correct_words: [typed_word | player.correct_words]
+          }
+        else
+          %{
+            player
+            | current_word_index: current_index + 1,
+              incorrect_words: [typed_word | player.incorrect_words]
+          }
+        end
+
+      updated_players = Map.put(state.players, player_id, updated_player)
+      new_state = %{state | players: updated_players}
+
+      # Broadcast word result to all players
+      broadcast(state.code, {:word_validated, player_id, current_index, is_correct})
+
+      {:reply, {:ok, is_correct, updated_player.current_word_index}, new_state, @idle_timeout}
+    else
+      {:reply, {:error, :player_not_found}, state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call({:validate_word, _player_id, _typed_word}, _from, state) do
+    {:reply, {:error, :game_not_playing}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call(:get_time_remaining, _from, state) do
+    {:reply, state.time_remaining || 0, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:countdown_tick, %{status: :countdown} = state) do
+    # Start the game timer
+    timer_ref = schedule_timer_tick(state.code)
+
+    new_state = %{
+      state
+      | status: :playing,
+        started_at: System.monotonic_time(:millisecond),
+        timer_ref: timer_ref
+    }
+
+    broadcast(state.code, {:game_started, %{words: state.current_text}})
+    {:noreply, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:timer_tick, %{status: :playing} = state) do
+    new_time = state.time_remaining - 1
+
+    if new_time <= 0 do
+      # Time's up! End the game
+      Logger.info("Timer expired for room #{state.code}")
+      if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
+
+      new_state = %{state | status: :results, time_remaining: 0, timer_ref: nil}
+      schedule_results(state.code)
+      broadcast(state.code, {:timer_expired, %{}})
+
+      {:noreply, new_state, @idle_timeout}
+    else
+      # Continue countdown
+      timer_ref = schedule_timer_tick(state.code)
+      new_state = %{state | time_remaining: new_time, timer_ref: timer_ref}
+
+      # Broadcast time update every second
+      broadcast(state.code, {:timer_update, new_time})
+
+      {:noreply, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_info(:timer_tick, state) do
+    # Ignore timer ticks if not playing
+    {:noreply, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:show_results, %{status: :results} = state) do
+    results = calculate_results(state)
+    broadcast(state.code, {:results, results})
+
+    # Check if more rounds needed
+    if state.round < state.settings.total_rounds do
+      schedule_next_round(state.code)
+      {:noreply, state, @idle_timeout}
+    else
+      # Game over
+      broadcast(state.code, {:game_over, results})
+      {:noreply, %{state | status: :lobby}, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_info(:next_round, state) do
+    {:noreply, %{state | status: :lobby, players: reset_players(state.players)}, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:timeout, state) do
+    Logger.info("Room #{state.code} timed out due to inactivity")
+    {:stop, :normal, state}
+  end
+
+  # Private Helpers
+
+  defp via_tuple(code) do
+    {:via, Registry, {Blitzkeys.Rooms.Registry, code}}
+  end
+
+  defp broadcast(code, message) do
+    PubSub.broadcast(Blitzkeys.PubSub, "room:#{code}", message)
+  end
+
+  defp default_settings(custom_settings) do
+    %{
+      language: :english,
+      total_rounds: 1,
+      scoring_mode: :wpm,
+      text_difficulty: :common_words,
+      timer_seconds: 60
+    }
+    |> Map.merge(custom_settings)
+  end
+
+  defp generate_text(settings) do
+    TextGenerator.generate(%{
+      language: settings.language,
+      difficulty: settings.text_difficulty,
+      word_count: 200
+    })
+  end
+
+  defp schedule_countdown(code) do
+    Process.send_after(whereis(code), :countdown_tick, 3000)
+  end
+
+  defp schedule_timer_tick(code) do
+    Process.send_after(whereis(code), :timer_tick, 1000)
+  end
+
+  defp schedule_results(code) do
+    Process.send_after(whereis(code), :show_results, 2000)
+  end
+
+  defp schedule_next_round(code) do
+    Process.send_after(whereis(code), :next_round, 5000)
+  end
+
+  defp calculate_results(state) do
+    elapsed_time = state.settings.timer_seconds - state.time_remaining
+
+    Enum.map(state.players, fn {id, player} ->
+      correct_count = length(player.correct_words)
+      incorrect_count = length(player.incorrect_words)
+      total_words = correct_count + incorrect_count
+
+      wpm =
+        if elapsed_time > 0 do
+          round(correct_count / (elapsed_time / 60))
+        else
+          0
+        end
+
+      accuracy =
+        if total_words > 0 do
+          round(correct_count / total_words * 100)
+        else
+          100
+        end
+
+      %{
+        player_id: id,
+        correct_words: correct_count,
+        incorrect_words: incorrect_count,
+        wpm: wpm,
+        accuracy: accuracy
+      }
+    end)
+    |> Enum.sort_by(& &1.wpm, :desc)
+  end
+
+  defp reset_players(players) do
+    Enum.into(players, %{}, fn {id, player} ->
+      {id, Map.drop(player, [:progress, :finished, :stats])}
+    end)
+  end
+end
