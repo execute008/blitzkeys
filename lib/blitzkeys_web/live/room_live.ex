@@ -32,6 +32,9 @@ defmodule BlitzkeysWeb.RoomLive do
               joined_at: System.system_time(:second)
             })
 
+          # Set as creator if this is the first player
+          Room.set_creator(code, player_id)
+
           socket =
             socket
             |> assign(
@@ -58,9 +61,12 @@ defmodule BlitzkeysWeb.RoomLive do
               # Countdown
               countdown: nil,
               # Loading state
-              calculating_results: false
+              calculating_results: false,
+              # Creator check
+              is_creator: false
             )
             |> handle_presence_diff(Presence.list("room:#{code}"))
+            |> update_creator_status()
 
           {:ok, socket}
         else
@@ -85,7 +91,8 @@ defmodule BlitzkeysWeb.RoomLive do
              has_voted_play_again: false,
              has_voted_lobby: false,
              countdown: nil,
-             calculating_results: false
+             calculating_results: false,
+             is_creator: false
            )}
         end
     end
@@ -157,6 +164,11 @@ defmodule BlitzkeysWeb.RoomLive do
                   <%= if id == @player_id do %>
                     <span class="badge badge-sm badge-primary">You</span>
                   <% end %>
+                  <%= if id == @room_state.creator_id do %>
+                    <span class="badge badge-sm badge-warning">
+                      <.icon name="hero-star" class="w-3 h-3 mr-1" /> Creator
+                    </span>
+                  <% end %>
                 </div>
                 <div class="w-3 h-3 rounded-full bg-success"></div>
               </div>
@@ -179,89 +191,124 @@ defmodule BlitzkeysWeb.RoomLive do
             <.icon name="hero-cog-6-tooth" class="w-6 h-6" /> Game Settings
           </h2>
 
-          <div class="space-y-4">
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Language</span>
-              </label>
-              <select class="select select-bordered" phx-change="update_language">
-                <option value="english" selected={@room_state.settings.language == :english}>
-                  English
-                </option>
-                <option value="spanish" selected={@room_state.settings.language == :spanish}>
-                  Spanish
-                </option>
-                <option value="german" selected={@room_state.settings.language == :german}>
-                  German
-                </option>
-              </select>
+          <%= if !@is_creator do %>
+            <div class="alert alert-info">
+              <.icon name="hero-information-circle" class="w-5 h-5" />
+              <span>Only the room creator can change settings</span>
             </div>
+          <% end %>
 
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Rounds</span>
-              </label>
-              <select class="select select-bordered" phx-change="update_rounds">
-                <option value="1" selected={@room_state.settings.total_rounds == 1}>Best of 1</option>
-                <option value="3" selected={@room_state.settings.total_rounds == 3}>Best of 3</option>
-                <option value="5" selected={@room_state.settings.total_rounds == 5}>Best of 5</option>
-              </select>
-            </div>
-
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Difficulty</span>
-              </label>
-              <select class="select select-bordered" phx-change="update_difficulty">
-                <option
-                  value="common_words"
-                  selected={@room_state.settings.text_difficulty == :common_words}
+          <form phx-change="update_settings" id="settings-form">
+            <div class="space-y-4">
+              <div class="form-control">
+                <label class="label">
+                  <span class="label-text">Language</span>
+                </label>
+                <select
+                  class="select select-bordered"
+                  name="language"
+                  disabled={!@is_creator}
                 >
-                  Common Words
-                </option>
-                <option value="quotes" selected={@room_state.settings.text_difficulty == :quotes}>
-                  Quotes
-                </option>
-                <option value="code" selected={@room_state.settings.text_difficulty == :code}>
-                  Code
-                </option>
-              </select>
-            </div>
+                  <option value="english" selected={@room_state.settings.language == :english}>
+                    English
+                  </option>
+                  <option value="spanish" selected={@room_state.settings.language == :spanish}>
+                    Spanish
+                  </option>
+                  <option value="german" selected={@room_state.settings.language == :german}>
+                    German
+                  </option>
+                </select>
+              </div>
 
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Timer Duration</span>
-              </label>
-              <select class="select select-bordered" phx-change="update_timer">
-                <option value="30" selected={@room_state.settings.timer_seconds == 30}>
-                  30 seconds
-                </option>
-                <option value="60" selected={@room_state.settings.timer_seconds == 60}>
-                  60 seconds
-                </option>
-                <option value="120" selected={@room_state.settings.timer_seconds == 120}>
-                  2 minutes
-                </option>
-              </select>
-            </div>
-
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Scoring Mode</span>
-              </label>
-              <select class="select select-bordered" phx-change="update_scoring">
-                <option value="wpm" selected={@room_state.settings.scoring_mode == :wpm}>
-                  Words Per Minute
-                </option>
-                <option
-                  value="wpm_accuracy"
-                  selected={@room_state.settings.scoring_mode == :wpm_accuracy}
+              <div class="form-control">
+                <label class="label">
+                  <span class="label-text">Rounds</span>
+                </label>
+                <select
+                  class="select select-bordered"
+                  name="rounds"
+                  disabled={!@is_creator}
                 >
-                  WPM + Accuracy
-                </option>
-              </select>
+                  <option value="1" selected={@room_state.settings.total_rounds == 1}>
+                    Best of 1
+                  </option>
+                  <option value="3" selected={@room_state.settings.total_rounds == 3}>
+                    Best of 3
+                  </option>
+                  <option value="5" selected={@room_state.settings.total_rounds == 5}>
+                    Best of 5
+                  </option>
+                </select>
+              </div>
+
+              <div class="form-control">
+                <label class="label">
+                  <span class="label-text">Difficulty</span>
+                </label>
+                <select
+                  class="select select-bordered"
+                  name="difficulty"
+                  disabled={!@is_creator}
+                >
+                  <option
+                    value="common_words"
+                    selected={@room_state.settings.text_difficulty == :common_words}
+                  >
+                    Common Words
+                  </option>
+                  <option value="quotes" selected={@room_state.settings.text_difficulty == :quotes}>
+                    Quotes
+                  </option>
+                  <option value="code" selected={@room_state.settings.text_difficulty == :code}>
+                    Code
+                  </option>
+                </select>
+              </div>
+
+              <div class="form-control">
+                <label class="label">
+                  <span class="label-text">Timer Duration</span>
+                </label>
+                <select
+                  class="select select-bordered"
+                  name="timer"
+                  disabled={!@is_creator}
+                >
+                  <option value="30" selected={@room_state.settings.timer_seconds == 30}>
+                    30 seconds
+                  </option>
+                  <option value="60" selected={@room_state.settings.timer_seconds == 60}>
+                    60 seconds
+                  </option>
+                  <option value="120" selected={@room_state.settings.timer_seconds == 120}>
+                    2 minutes
+                  </option>
+                </select>
+              </div>
+
+              <div class="form-control">
+                <label class="label">
+                  <span class="label-text">Scoring Mode</span>
+                </label>
+                <select
+                  class="select select-bordered"
+                  name="scoring"
+                  disabled={!@is_creator}
+                >
+                  <option value="wpm" selected={@room_state.settings.scoring_mode == :wpm}>
+                    Words Per Minute
+                  </option>
+                  <option
+                    value="wpm_accuracy"
+                    selected={@room_state.settings.scoring_mode == :wpm_accuracy}
+                  >
+                    WPM + Accuracy
+                  </option>
+                </select>
+              </div>
             </div>
-          </div>
+          </form>
 
           <%= if map_size(@players) >= 2 do %>
             <div class="mt-6">
@@ -487,9 +534,12 @@ defmodule BlitzkeysWeb.RoomLive do
               <tr>
                 <th>Rank</th>
                 <th>Player</th>
+                <%= if @room_state.settings.scoring_mode == :wpm_accuracy do %>
+                  <th>Score</th>
+                <% end %>
                 <th>WPM</th>
                 <th>Accuracy</th>
-                <th>Time</th>
+                <th>Stats</th>
               </tr>
             </thead>
             <tbody>
@@ -503,6 +553,9 @@ defmodule BlitzkeysWeb.RoomLive do
                     <% end %>
                   </td>
                   <td class="font-medium">{@players[result.player_id][:nickname] || "Unknown"}</td>
+                  <%= if @room_state.settings.scoring_mode == :wpm_accuracy do %>
+                    <td class="font-bold text-primary">{result.score}</td>
+                  <% end %>
                   <td>{result.wpm}</td>
                   <td>{result.accuracy}%</td>
                   <td class="text-sm">
@@ -575,28 +628,22 @@ defmodule BlitzkeysWeb.RoomLive do
   # Event Handlers
 
   @impl true
-  def handle_event("update_language", %{"value" => lang}, socket) do
-    update_room_settings(socket, %{language: String.to_existing_atom(lang)})
-  end
+  def handle_event("update_settings", params, socket) do
+    # Build settings update map from form params
+    settings_updates =
+      []
+      |> maybe_add_setting(params, "language", :language, &String.to_existing_atom/1)
+      |> maybe_add_setting(params, "rounds", :total_rounds, &String.to_integer/1)
+      |> maybe_add_setting(params, "difficulty", :text_difficulty, &String.to_existing_atom/1)
+      |> maybe_add_setting(params, "timer", :timer_seconds, &String.to_integer/1)
+      |> maybe_add_setting(params, "scoring", :scoring_mode, &String.to_existing_atom/1)
+      |> Enum.into(%{})
 
-  @impl true
-  def handle_event("update_rounds", %{"value" => rounds}, socket) do
-    update_room_settings(socket, %{total_rounds: String.to_integer(rounds)})
-  end
-
-  @impl true
-  def handle_event("update_difficulty", %{"value" => diff}, socket) do
-    update_room_settings(socket, %{text_difficulty: String.to_existing_atom(diff)})
-  end
-
-  @impl true
-  def handle_event("update_timer", %{"value" => seconds}, socket) do
-    update_room_settings(socket, %{timer_seconds: String.to_integer(seconds)})
-  end
-
-  @impl true
-  def handle_event("update_scoring", %{"value" => mode}, socket) do
-    update_room_settings(socket, %{scoring_mode: String.to_existing_atom(mode)})
+    if map_size(settings_updates) > 0 do
+      update_room_settings(socket, socket.assigns.player_id, settings_updates)
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -656,6 +703,11 @@ defmodule BlitzkeysWeb.RoomLive do
 
   @impl true
   def handle_info(%{event: "presence_diff", payload: %{joins: joins, leaves: leaves}}, socket) do
+    # Check if creator needs reassignment when players join or leave
+    if map_size(joins) > 0 or map_size(leaves) > 0 do
+      Room.check_creator(socket.assigns.code)
+    end
+
     socket =
       socket
       |> add_players(joins)
@@ -668,6 +720,22 @@ defmodule BlitzkeysWeb.RoomLive do
   def handle_info({:settings_updated, settings}, socket) do
     room_state = %{socket.assigns.room_state | settings: settings}
     {:noreply, assign(socket, room_state: room_state)}
+  end
+
+  @impl true
+  def handle_info({:creator_changed, new_creator_id}, socket) do
+    is_creator = new_creator_id == socket.assigns.player_id
+
+    socket =
+      if is_creator do
+        socket
+        |> assign(is_creator: true)
+        |> put_flash(:info, "You are now the room creator and can change settings")
+      else
+        assign(socket, is_creator: false)
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -802,10 +870,16 @@ defmodule BlitzkeysWeb.RoomLive do
 
   # Private Helpers
 
-  defp update_room_settings(socket, settings) do
-    case Room.update_settings(socket.assigns.code, settings) do
-      {:ok, _} -> {:noreply, socket}
-      {:error, reason} -> {:noreply, put_flash(socket, :error, "Cannot update: #{reason}")}
+  defp update_room_settings(socket, player_id, settings) do
+    case Room.update_settings(socket.assigns.code, player_id, settings) do
+      {:ok, _} ->
+        {:noreply, socket}
+
+      {:error, :not_creator} ->
+        {:noreply, put_flash(socket, :error, "Only the room creator can change settings")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Cannot update: #{reason}")}
     end
   end
 
@@ -889,13 +963,14 @@ defmodule BlitzkeysWeb.RoomLive do
   end
 
   # Assign colors to players based on their index
+  # Use contrasting colors that work well on both yellow and black backgrounds
   defp get_player_color(index) do
     colors = [
-      "rgb(59, 130, 246)",
-      # blue
-      "rgb(239, 68, 68)",
+      "rgb(220, 38, 38)",
       # red
-      "rgb(34, 197, 94)",
+      "rgb(37, 99, 235)",
+      # blue
+      "rgb(22, 163, 74)",
       # green
       "rgb(168, 85, 247)",
       # purple
@@ -905,8 +980,8 @@ defmodule BlitzkeysWeb.RoomLive do
       # pink
       "rgb(20, 184, 166)",
       # teal
-      "rgb(234, 179, 8)"
-      # yellow
+      "rgb(147, 51, 234)"
+      # violet
     ]
 
     Enum.at(colors, rem(index, length(colors)))
@@ -919,7 +994,7 @@ defmodule BlitzkeysWeb.RoomLive do
     |> Enum.with_index()
     |> Enum.find_value(fn {{id, _}, idx} ->
       if id == player_id, do: get_player_color(idx), else: nil
-    end) || "rgb(156, 163, 175)"
+    end) || "rgb(120, 120, 120)"
   end
 
   defp generate_player_id do
@@ -931,5 +1006,21 @@ defmodule BlitzkeysWeb.RoomLive do
     nouns = ["Typer", "Racer", "Champ", "Master", "Ace", "Pro", "Wizard", "Ninja"]
 
     "#{Enum.random(adjectives)}#{Enum.random(nouns)}"
+  end
+
+  defp update_creator_status(socket) do
+    room_state = Room.get_state(socket.assigns.code)
+    # Handle rooms that don't have creator_id yet (backward compatibility)
+    creator_id = Map.get(room_state, :creator_id)
+    is_creator = creator_id == socket.assigns.player_id
+    assign(socket, is_creator: is_creator)
+  end
+
+  defp maybe_add_setting(acc, params, param_key, setting_key, converter) do
+    if Map.has_key?(params, param_key) do
+      [{setting_key, converter.(params[param_key])} | acc]
+    else
+      acc
+    end
   end
 end

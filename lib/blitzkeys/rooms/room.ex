@@ -39,9 +39,19 @@ defmodule Blitzkeys.Rooms.Room do
     code |> via_tuple() |> GenServer.call(:get_state)
   end
 
-  @doc "Updates room settings (only allowed in lobby state)"
-  def update_settings(code, settings) do
-    code |> via_tuple() |> GenServer.call({:update_settings, settings})
+  @doc "Updates room settings (only allowed in lobby state and by creator)"
+  def update_settings(code, player_id, settings) do
+    code |> via_tuple() |> GenServer.call({:update_settings, player_id, settings})
+  end
+
+  @doc "Sets the creator of the room (first player to join)"
+  def set_creator(code, player_id) do
+    code |> via_tuple() |> GenServer.call({:set_creator, player_id})
+  end
+
+  @doc "Checks and reassigns creator if needed (when players join/leave)"
+  def check_creator(code) do
+    code |> via_tuple() |> GenServer.cast(:check_creator)
   end
 
   @doc "Vote to start the game"
@@ -73,6 +83,9 @@ defmodule Blitzkeys.Rooms.Room do
 
   @impl true
   def init({code, settings}) do
+    # Subscribe to presence changes to detect when creator leaves
+    PubSub.subscribe(Blitzkeys.PubSub, "room:#{code}")
+
     state = %{
       code: code,
       status: :lobby,
@@ -87,7 +100,8 @@ defmodule Blitzkeys.Rooms.Room do
       votes_to_start: MapSet.new(),
       votes_to_play_again: MapSet.new(),
       votes_to_lobby: MapSet.new(),
-      countdown: nil
+      countdown: nil,
+      creator_id: nil
     }
 
     Logger.info("Room #{code} created")
@@ -100,16 +114,37 @@ defmodule Blitzkeys.Rooms.Room do
   end
 
   @impl true
-  def handle_call({:update_settings, new_settings}, _from, %{status: :lobby} = state) do
-    updated_settings = Map.merge(state.settings, new_settings)
-    new_state = %{state | settings: updated_settings}
-
-    broadcast(state.code, {:settings_updated, updated_settings})
-    {:reply, {:ok, updated_settings}, new_state, @idle_timeout}
+  def handle_call({:set_creator, player_id}, _from, %{creator_id: nil} = state) do
+    new_state = %{state | creator_id: player_id}
+    Logger.info("Room #{state.code} creator set to #{player_id}")
+    {:reply, :ok, new_state, @idle_timeout}
   end
 
   @impl true
-  def handle_call({:update_settings, _}, _from, state) do
+  def handle_call({:set_creator, _player_id}, _from, state) do
+    # Creator already set, ignore
+    {:reply, :ok, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:update_settings, player_id, new_settings}, _from, %{status: :lobby} = state) do
+    # Get creator_id safely (backward compatibility for old rooms)
+    creator_id = Map.get(state, :creator_id)
+
+    # If no creator set, or player is the creator, allow changes
+    if creator_id == nil or creator_id == player_id do
+      updated_settings = Map.merge(state.settings, new_settings)
+      new_state = %{state | settings: updated_settings}
+
+      broadcast(state.code, {:settings_updated, updated_settings})
+      {:reply, {:ok, updated_settings}, new_state, @idle_timeout}
+    else
+      {:reply, {:error, :not_creator}, state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call({:update_settings, _player_id, _new_settings}, _from, state) do
     {:reply, {:error, :game_in_progress}, state, @idle_timeout}
   end
 
@@ -267,7 +302,45 @@ defmodule Blitzkeys.Rooms.Room do
   end
 
   @impl true
-  def handle_info(:all_voted_start, %{status: :lobby} = state) do
+  def handle_cast(:check_creator, state) do
+    # Get current players from Presence
+    current_players =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> Map.keys()
+
+    creator_id = Map.get(state, :creator_id)
+
+    cond do
+      # No creator set yet, do nothing
+      creator_id == nil ->
+        {:noreply, state, @idle_timeout}
+
+      # Creator is still in the room, do nothing
+      creator_id in current_players ->
+        {:noreply, state, @idle_timeout}
+
+      # Creator left, reassign to first available player
+      length(current_players) > 0 ->
+        new_creator = List.first(current_players)
+        new_state = %{state | creator_id: new_creator}
+
+        Logger.info(
+          "Room #{state.code}: Creator left, reassigning from #{creator_id} to #{new_creator}"
+        )
+
+        broadcast(state.code, {:creator_changed, new_creator})
+        {:noreply, new_state, @idle_timeout}
+
+      # No players left, clear creator
+      true ->
+        new_state = %{state | creator_id: nil}
+        {:noreply, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_info(:all_voted_start, state) when state.status in [:lobby, :results] do
     # Get current players from Presence
     players =
       "room:#{state.code}"
@@ -295,6 +368,7 @@ defmodule Blitzkeys.Rooms.Room do
           timer_ref: nil,
           time_remaining: state.settings.timer_seconds,
           votes_to_start: MapSet.new(),
+          votes_to_play_again: MapSet.new(),
           countdown: 3
       }
 
@@ -307,10 +381,9 @@ defmodule Blitzkeys.Rooms.Room do
 
   @impl true
   def handle_info(:all_voted_play_again, %{status: :results} = state) do
-    # Reset and start new game
+    # Reset and start new game directly (don't change to :lobby)
     send(self(), :all_voted_start)
-    new_state = %{state | status: :lobby, votes_to_play_again: MapSet.new()}
-    {:noreply, new_state, @idle_timeout}
+    {:noreply, state, @idle_timeout}
   end
 
   @impl true
@@ -416,6 +489,28 @@ defmodule Blitzkeys.Rooms.Room do
     {:stop, :normal, state}
   end
 
+  @impl true
+  def handle_info(%{event: "presence_diff", payload: %{joins: _joins, leaves: leaves}}, state) do
+    # Check if creator left and reassign if needed
+    if map_size(leaves) > 0 do
+      send(self(), :check_creator_async)
+    end
+
+    {:noreply, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:check_creator_async, state) do
+    # Perform creator check asynchronously
+    handle_cast(:check_creator, state)
+  end
+
+  # Catch-all for other messages (like broadcasts from itself)
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state, @idle_timeout}
+  end
+
   # Private Helpers
 
   defp via_tuple(code) do
@@ -468,34 +563,50 @@ defmodule Blitzkeys.Rooms.Room do
   defp calculate_results(state) do
     elapsed_time = state.settings.timer_seconds - state.time_remaining
 
-    Enum.map(state.players, fn {id, player} ->
-      correct_count = length(player.correct_words)
-      incorrect_count = length(player.incorrect_words)
-      total_words = correct_count + incorrect_count
+    results =
+      Enum.map(state.players, fn {id, player} ->
+        correct_count = length(player.correct_words)
+        incorrect_count = length(player.incorrect_words)
+        total_words = correct_count + incorrect_count
 
-      wpm =
-        if elapsed_time > 0 do
-          round(correct_count / (elapsed_time / 60))
-        else
-          0
-        end
+        wpm =
+          if elapsed_time > 0 do
+            round(correct_count / (elapsed_time / 60))
+          else
+            0
+          end
 
-      accuracy =
-        if total_words > 0 do
-          round(correct_count / total_words * 100)
-        else
-          100
-        end
+        accuracy =
+          if total_words > 0 do
+            round(correct_count / total_words * 100)
+          else
+            100
+          end
 
-      %{
-        player_id: id,
-        correct_words: correct_count,
-        incorrect_words: incorrect_count,
-        wpm: wpm,
-        accuracy: accuracy
-      }
-    end)
-    |> Enum.sort_by(& &1.wpm, :desc)
+        # Calculate score based on scoring mode
+        score =
+          case state.settings.scoring_mode do
+            :wpm ->
+              wpm
+
+            :wpm_accuracy ->
+              # Combine WPM and accuracy: WPM * (accuracy/100)
+              # This gives higher scores to players with both high WPM and accuracy
+              round(wpm * (accuracy / 100))
+          end
+
+        %{
+          player_id: id,
+          correct_words: correct_count,
+          incorrect_words: incorrect_count,
+          wpm: wpm,
+          accuracy: accuracy,
+          score: score
+        }
+      end)
+
+    # Sort by score (highest first)
+    Enum.sort_by(results, & &1.score, :desc)
   end
 
   defp reset_players(players) do
