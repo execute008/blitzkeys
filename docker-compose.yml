@@ -6,13 +6,14 @@ services:
     image: blitzkeys:0.1.0
     container_name: blitzkeys_app
     ports:
-      - "36927:4000"
+      - "0.0.0.0:36927:4000"
     env_file:
       - config/docker.env
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    network_mode: bridge
 
   postgres:
     image: postgres:16-alpine
