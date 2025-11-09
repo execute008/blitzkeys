@@ -35,3 +35,6 @@ blitzkeys-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Docker environment files
+/config/docker.env
+/volumes/

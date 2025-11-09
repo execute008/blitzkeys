@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Mix artifacts
+/_build
+/deps
+*.ez
+
+# Generate on crash by the VM
+erl_crash.dump
+
+# Static artifacts
+/assets/node_modules
+
+# Ignore package tarball
+*.tar
+
+# Ignore Docker volumes
+/volumes
+
+# Temporary files
+*~
+*.swp
+.DS_Store
+
+# IDE
+.vscode
+.idea
+*.iml
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+/cover
+/test/**/*.beam
+
+# Build artifacts
+priv/static

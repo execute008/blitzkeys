@@ -1,11 +1,24 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blitzkeys:0.1.0
+    container_name: blitzkeys_app
+    ports:
+      - "4000:4000"
+    env_file:
+      - config/docker.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     container_name: blitzkeys_postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: blitzkeys_dev
+    env_file:
+      - config/docker.env
     ports:
       - "5432:5432"
     volumes:
@@ -15,6 +28,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   postgres_data:
