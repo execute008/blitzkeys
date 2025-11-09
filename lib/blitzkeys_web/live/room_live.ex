@@ -15,6 +15,9 @@ defmodule BlitzkeysWeb.RoomLive do
          |> push_navigate(to: ~p"/")}
 
       _pid ->
+        # Get room state for initial render
+        room_state = Room.get_state(code)
+
         if connected?(socket) do
           # Subscribe to room updates
           PubSub.subscribe(Blitzkeys.PubSub, "room:#{code}")
@@ -29,8 +32,6 @@ defmodule BlitzkeysWeb.RoomLive do
               joined_at: System.system_time(:second)
             })
 
-          room_state = Room.get_state(code)
-
           socket =
             socket
             |> assign(
@@ -39,26 +40,71 @@ defmodule BlitzkeysWeb.RoomLive do
               nickname: nickname,
               room_state: room_state,
               players: %{},
-              input_text: "",
-              errors: 0,
-              started_at: nil,
-              finished_at: nil,
-              wpm: 0
+              # New 10FF-style assigns
+              current_input: "",
+              current_word_index: 0,
+              typed_words: [],
+              time_remaining: nil,
+              player_progress: %{},
+              results: [],
+              # Voting
+              votes_start: 0,
+              votes_play_again: 0,
+              votes_lobby: 0,
+              player_count: 0,
+              has_voted_start: false,
+              has_voted_play_again: false,
+              has_voted_lobby: false,
+              # Countdown
+              countdown: nil,
+              # Loading state
+              calculating_results: false
             )
             |> handle_presence_diff(Presence.list("room:#{code}"))
 
           {:ok, socket}
         else
-          {:ok, assign(socket, code: code, player_id: nil)}
+          # Initial render (not connected yet)
+          {:ok,
+           assign(socket,
+             code: code,
+             player_id: nil,
+             room_state: room_state,
+             players: %{},
+             current_input: "",
+             current_word_index: 0,
+             typed_words: [],
+             time_remaining: nil,
+             player_progress: %{},
+             results: [],
+             votes_start: 0,
+             votes_play_again: 0,
+             votes_lobby: 0,
+             player_count: 0,
+             has_voted_start: false,
+             has_voted_play_again: false,
+             has_voted_lobby: false,
+             countdown: nil,
+             calculating_results: false
+           )}
         end
     end
   end
 
   @impl true
   def render(assigns) do
+    # Only use full width for the playing state
+    assigns = assign(assigns, :is_playing, assigns.room_state.status == :playing)
+
     ~H"""
-    <Layouts.app flash={@flash}>
-      <div class="container mx-auto px-4 py-8 max-w-6xl">
+    <Layouts.app flash={@flash} full_width={@is_playing}>
+      <div
+        class={[
+          "mx-auto",
+          if(@is_playing, do: "container", else: "max-w-2xl")
+        ]}
+        style={if @is_playing, do: "max-width: 1400px;", else: ""}
+      >
         <%!-- Room Header --%>
         <div class="mb-8">
           <div class="flex justify-between items-center">
@@ -184,6 +230,23 @@ defmodule BlitzkeysWeb.RoomLive do
 
             <div class="form-control">
               <label class="label">
+                <span class="label-text">Timer Duration</span>
+              </label>
+              <select class="select select-bordered" phx-change="update_timer">
+                <option value="30" selected={@room_state.settings.timer_seconds == 30}>
+                  30 seconds
+                </option>
+                <option value="60" selected={@room_state.settings.timer_seconds == 60}>
+                  60 seconds
+                </option>
+                <option value="120" selected={@room_state.settings.timer_seconds == 120}>
+                  2 minutes
+                </option>
+              </select>
+            </div>
+
+            <div class="form-control">
+              <label class="label">
                 <span class="label-text">Scoring Mode</span>
               </label>
               <select class="select select-bordered" phx-change="update_scoring">
@@ -201,9 +264,27 @@ defmodule BlitzkeysWeb.RoomLive do
           </div>
 
           <%= if map_size(@players) >= 2 do %>
-            <button phx-click="start_game" class="btn btn-primary btn-block mt-6">
-              <.icon name="hero-play" class="w-5 h-5 mr-2" /> Start Game
-            </button>
+            <div class="mt-6">
+              <button
+                phx-click="vote_start"
+                class={[
+                  "btn btn-block",
+                  if(@has_voted_start, do: "btn-success", else: "btn-primary")
+                ]}
+                disabled={@has_voted_start}
+              >
+                <%= if @has_voted_start do %>
+                  <.icon name="hero-check-circle" class="w-5 h-5 mr-2" /> Ready!
+                <% else %>
+                  <.icon name="hero-play" class="w-5 h-5 mr-2" /> Ready to Start
+                <% end %>
+              </button>
+              <%= if @votes_start > 0 do %>
+                <p class="text-center text-sm mt-2 text-base-content/60">
+                  {@votes_start}/{@player_count} players ready
+                </p>
+              <% end %>
+            </div>
           <% end %>
         </div>
       </div>
@@ -218,7 +299,9 @@ defmodule BlitzkeysWeb.RoomLive do
       <div class="text-center">
         <h2 class="text-6xl font-bold mb-4">Get Ready!</h2>
         <p class="text-2xl text-base-content/60">Game starting in...</p>
-        <div class="text-9xl font-bold text-primary mt-8 animate-pulse">3</div>
+        <div class="text-9xl font-bold text-primary mt-8 animate-pulse">
+          {@countdown || 3}
+        </div>
       </div>
     </div>
     """
@@ -228,67 +311,162 @@ defmodule BlitzkeysWeb.RoomLive do
   defp game_view(assigns) do
     ~H"""
     <div class="space-y-6">
-      <%!-- Progress Bars for all players --%>
-      <div class="card bg-base-200">
-        <div class="card-body">
-          <h3 class="card-title mb-4">Race Progress</h3>
-          <div class="space-y-3">
-            <%= for {id, player} <- @players do %>
-              <div>
-                <div class="flex justify-between text-sm mb-1">
-                  <span class="font-medium">{player.nickname}</span>
-                  <span class="text-base-content/60">{player[:progress] || 0}%</span>
-                </div>
-                <progress
-                  class="progress progress-primary w-full"
-                  value={player[:progress] || 0}
-                  max="100"
-                >
-                </progress>
-              </div>
-            <% end %>
+      <%!-- Timer and Stats Bar --%>
+      <div class="flex justify-between items-center">
+        <div class="stats shadow bg-base-200">
+          <div class="stat py-3 px-6">
+            <div class="stat-title text-xs">Time Remaining</div>
+            <div class={[
+              "stat-value text-3xl",
+              @time_remaining && @time_remaining <= 10 && "text-error animate-pulse"
+            ]}>
+              {@time_remaining || @room_state.settings.timer_seconds}s
+            </div>
+          </div>
+        </div>
+
+        <div class="stats shadow bg-base-200">
+          <div class="stat py-3 px-4">
+            <div class="stat-title text-xs">Correct</div>
+            <div class="stat-value text-2xl text-success">
+              {Enum.count(@typed_words, fn {_, correct} -> correct end)}
+            </div>
+          </div>
+          <div class="stat py-3 px-4">
+            <div class="stat-title text-xs">Errors</div>
+            <div class="stat-value text-2xl text-error">
+              {Enum.count(@typed_words, fn {_, correct} -> !correct end)}
+            </div>
           </div>
         </div>
       </div>
 
-      <%!-- Typing Interface --%>
-      <div class="card bg-base-200">
-        <div class="card-body">
-          <div class="mb-6">
-            <div class="flex justify-between items-center mb-4">
-              <h3 class="text-lg font-semibold">Type the text below:</h3>
-              <div class="stats shadow">
-                <div class="stat py-2 px-4">
-                  <div class="stat-title text-xs">WPM</div>
-                  <div class="stat-value text-2xl">{@wpm}</div>
+      <%!-- Main Typing Area --%>
+      <div class="card bg-base-200 shadow-xl">
+        <div class="card-body p-8">
+          <%!-- Words Display (2 lines visible, scrolling line-by-line) --%>
+          <div class="bg-base-300 p-6 rounded-lg mb-6 overflow-hidden" style="height: 140px;">
+            <div class="space-y-3">
+              <%= for {line_words, line_num} <- visible_lines(@room_state.current_text, @current_word_index, @typed_words) do %>
+                <div class="flex flex-wrap gap-x-3 gap-y-1 font-mono text-2xl">
+                  <%= for {word, idx} <- line_words do %>
+                    <% {_typed_word, was_correct} =
+                      Enum.find(@typed_words, {nil, nil}, fn {w_idx, _} ->
+                        w_idx == idx
+                      end) %>
+                    <% opponent_colors =
+                      get_opponent_underlines(idx, @player_progress, @players, @player_id) %>
+                    <span
+                      class={[
+                        "whitespace-nowrap transition-colors relative inline-block",
+                        cond do
+                          idx < @current_word_index && was_correct == true ->
+                            "text-success font-semibold"
+
+                          idx < @current_word_index && was_correct == false ->
+                            "text-error line-through font-semibold"
+
+                          idx == @current_word_index ->
+                            "border-b-4 border-primary font-bold bg-primary/10 px-1"
+
+                          true ->
+                            "text-base-content/40"
+                        end
+                      ]}
+                      style={
+                        if opponent_colors != [] do
+                          underlines =
+                            opponent_colors
+                            |> Enum.with_index()
+                            |> Enum.map(fn {color, offset} ->
+                              y_offset = 2 + offset * 3
+                              "0 #{y_offset}px 0 0 #{color}"
+                            end)
+                            |> Enum.join(", ")
+
+                          "box-shadow: #{underlines}; padding-bottom: #{length(opponent_colors) * 3}px;"
+                        else
+                          ""
+                        end
+                      }
+                    >
+                      {word}
+                    </span>
+                  <% end %>
                 </div>
-                <div class="stat py-2 px-4">
-                  <div class="stat-title text-xs">Errors</div>
-                  <div class="stat-value text-2xl">{@errors}</div>
+              <% end %>
+            </div>
+          </div>
+
+          <%!-- Input Field --%>
+          <input
+            id="typing-input"
+            type="text"
+            value={@current_input}
+            phx-hook="TypingInput"
+            class="input input-bordered input-lg w-full font-mono text-2xl"
+            placeholder="Start typing..."
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            autofocus
+          />
+        </div>
+      </div>
+
+      <%!-- Opponent Progress Boxes --%>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <%= for {id, player} <- @players, id != @player_id do %>
+          <% player_color = get_color_for_player(id, @players, @player_id) %>
+          <div class="card bg-base-200 shadow">
+            <div class="card-body p-4">
+              <div class="flex justify-between items-center mb-2">
+                <h4 class="font-semibold" style={"color: #{player_color};"}>
+                  {player.nickname}
+                </h4>
+                <span class="text-sm text-base-content/60">
+                  Word {@player_progress[id][:current_word_index] || 0}
+                </span>
+              </div>
+              <%!-- Mini word display for opponent --%>
+              <div
+                class="bg-base-300 p-3 rounded text-xs font-mono overflow-hidden"
+                style="max-height: 60px;"
+              >
+                <div class="flex flex-wrap gap-1">
+                  <%= for {word, idx} <- opponent_visible_words(
+                        @room_state.current_text,
+                        @player_progress[id][:current_word_index] || 0
+                      ) do %>
+                    <% opponent_typed_words = @player_progress[id][:typed_words] || [] %>
+                    <% {_word_idx, was_correct} =
+                      Enum.find(opponent_typed_words, {nil, nil}, fn {w_idx, _} ->
+                        w_idx == idx
+                      end) %>
+                    <span class={[
+                      "whitespace-nowrap",
+                      cond do
+                        idx < (@player_progress[id][:current_word_index] || 0) && was_correct == true ->
+                          "text-success font-semibold"
+
+                        idx < (@player_progress[id][:current_word_index] || 0) && was_correct == false ->
+                          "text-error line-through"
+
+                        idx == (@player_progress[id][:current_word_index] || 0) ->
+                          "border-b-2 border-primary font-bold"
+
+                        true ->
+                          "text-base-content/30"
+                      end
+                    ]}>
+                      {word}
+                    </span>
+                  <% end %>
                 </div>
               </div>
             </div>
-
-            <%!-- Text to type --%>
-            <div class="bg-base-300 p-6 rounded-lg mb-4">
-              <p class="text-xl font-mono leading-relaxed">{@room_state.current_text}</p>
-            </div>
-
-            <%!-- Input area --%>
-            <input
-              id="typing-input"
-              type="text"
-              phx-keyup="type"
-              value={@input_text}
-              class="input input-bordered input-lg w-full font-mono"
-              placeholder="Start typing..."
-              autocomplete="off"
-              autocorrect="off"
-              spellcheck="false"
-              phx-hook="TypingInput"
-            />
           </div>
-        </div>
+        <% end %>
       </div>
     </div>
     """
@@ -315,8 +493,8 @@ defmodule BlitzkeysWeb.RoomLive do
               </tr>
             </thead>
             <tbody>
-              <%= for {player, index} <- Enum.with_index(@players |> Enum.to_list(), 1) do %>
-                <tr class={if elem(player, 0) == @player_id, do: "bg-primary/10"}>
+              <%= for {result, index} <- Enum.with_index(@results, 1) do %>
+                <tr class={if result.player_id == @player_id, do: "bg-primary/10"}>
                   <td>
                     <%= if index == 1 do %>
                       <.icon name="hero-trophy" class="w-6 h-6 text-warning" />
@@ -324,21 +502,71 @@ defmodule BlitzkeysWeb.RoomLive do
                       {index}
                     <% end %>
                   </td>
-                  <td class="font-medium">{elem(player, 1).nickname}</td>
-                  <td>{elem(player, 1)[:stats][:wpm] || 0}</td>
-                  <td>{elem(player, 1)[:stats][:accuracy] || 0}%</td>
-                  <td>{elem(player, 1)[:stats][:time] || 0}s</td>
+                  <td class="font-medium">{@players[result.player_id][:nickname] || "Unknown"}</td>
+                  <td>{result.wpm}</td>
+                  <td>{result.accuracy}%</td>
+                  <td class="text-sm">
+                    <span class="text-success">{result.correct_words} correct</span>
+                    / <span class="text-error">{result.incorrect_words} errors</span>
+                  </td>
                 </tr>
               <% end %>
             </tbody>
           </table>
         </div>
 
-        <div class="card-actions justify-end mt-6">
-          <button phx-click="play_again" class="btn btn-primary">
-            Play Again
-          </button>
-        </div>
+        <%= if @calculating_results do %>
+          <div class="flex justify-center items-center mt-6">
+            <span class="loading loading-spinner loading-lg text-primary"></span>
+            <p class="ml-4 text-lg">Calculating results...</p>
+          </div>
+        <% else %>
+          <div class="card-actions justify-center gap-4 mt-6">
+            <div class="flex flex-col items-center">
+              <button
+                phx-click="vote_play_again"
+                class={[
+                  "btn",
+                  if(@has_voted_play_again, do: "btn-success", else: "btn-primary")
+                ]}
+                disabled={@has_voted_play_again}
+              >
+                <%= if @has_voted_play_again do %>
+                  <.icon name="hero-check-circle" class="w-5 h-5 mr-2" /> Voted
+                <% else %>
+                  <.icon name="hero-arrow-path" class="w-5 h-5 mr-2" /> Play Again
+                <% end %>
+              </button>
+              <%= if @votes_play_again > 0 do %>
+                <p class="text-sm mt-1 text-base-content/60">
+                  {@votes_play_again}/{@player_count}
+                </p>
+              <% end %>
+            </div>
+
+            <div class="flex flex-col items-center">
+              <button
+                phx-click="vote_back_to_lobby"
+                class={[
+                  "btn",
+                  if(@has_voted_lobby, do: "btn-success", else: "btn-ghost")
+                ]}
+                disabled={@has_voted_lobby}
+              >
+                <%= if @has_voted_lobby do %>
+                  <.icon name="hero-check-circle" class="w-5 h-5 mr-2" /> Voted
+                <% else %>
+                  <.icon name="hero-arrow-left" class="w-5 h-5 mr-2" /> Back to Lobby
+                <% end %>
+              </button>
+              <%= if @votes_lobby > 0 do %>
+                <p class="text-sm mt-1 text-base-content/60">
+                  {@votes_lobby}/{@player_count}
+                </p>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
       </div>
     </div>
     """
@@ -362,47 +590,66 @@ defmodule BlitzkeysWeb.RoomLive do
   end
 
   @impl true
+  def handle_event("update_timer", %{"value" => seconds}, socket) do
+    update_room_settings(socket, %{timer_seconds: String.to_integer(seconds)})
+  end
+
+  @impl true
   def handle_event("update_scoring", %{"value" => mode}, socket) do
     update_room_settings(socket, %{scoring_mode: String.to_existing_atom(mode)})
   end
 
   @impl true
-  def handle_event("start_game", _params, socket) do
-    case Room.start_game(socket.assigns.code) do
-      :ok -> {:noreply, socket}
-      {:error, reason} -> {:noreply, put_flash(socket, :error, "Cannot start: #{reason}")}
+  def handle_event("vote_start", _params, socket) do
+    case Room.vote_start(socket.assigns.code, socket.assigns.player_id) do
+      :ok -> {:noreply, assign(socket, has_voted_start: true)}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, "Cannot vote: #{reason}")}
     end
   end
 
   @impl true
-  def handle_event("type", %{"key" => _key, "value" => value}, socket) do
-    # Calculate progress and WPM
-    target_text = socket.assigns.room_state.current_text
-    progress = calculate_progress(value, target_text)
-
-    # Update local state
-    socket = assign(socket, input_text: value, wpm: calculate_wpm(socket, value))
-
-    # Broadcast progress
-    Room.update_progress(socket.assigns.code, socket.assigns.player_id, progress)
-
-    # Check if finished
-    if progress >= 100 do
-      stats = %{
-        wpm: socket.assigns.wpm,
-        accuracy: calculate_accuracy(value, target_text),
-        time: calculate_time(socket)
-      }
-
-      Room.player_finished(socket.assigns.code, socket.assigns.player_id, stats)
+  def handle_event("vote_play_again", _params, socket) do
+    case Room.vote_play_again(socket.assigns.code, socket.assigns.player_id) do
+      :ok -> {:noreply, assign(socket, has_voted_play_again: true)}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, "Cannot vote: #{reason}")}
     end
-
-    {:noreply, socket}
   end
 
   @impl true
-  def handle_event("play_again", _params, socket) do
-    {:noreply, socket}
+  def handle_event("vote_back_to_lobby", _params, socket) do
+    case Room.vote_back_to_lobby(socket.assigns.code, socket.assigns.player_id) do
+      :ok -> {:noreply, assign(socket, has_voted_lobby: true)}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, "Cannot vote: #{reason}")}
+    end
+  end
+
+  @impl true
+  def handle_event("validate_word", %{"word" => typed_word}, socket) do
+    case Room.validate_word(socket.assigns.code, socket.assigns.player_id, typed_word) do
+      {:ok, is_correct, new_index} ->
+        # Update local state
+        typed_words = [
+          {socket.assigns.current_word_index, is_correct} | socket.assigns.typed_words
+        ]
+
+        socket =
+          socket
+          |> assign(
+            current_word_index: new_index,
+            typed_words: typed_words,
+            current_input: ""
+          )
+
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("update_input", %{"value" => value}, socket) do
+    {:noreply, assign(socket, current_input: value)}
   end
 
   # PubSub Message Handlers
@@ -424,38 +671,128 @@ defmodule BlitzkeysWeb.RoomLive do
   end
 
   @impl true
-  def handle_info({:game_starting, _data}, socket) do
+  def handle_info({:game_starting, %{countdown: countdown}}, socket) do
     room_state = Room.get_state(socket.assigns.code)
-    {:noreply, assign(socket, room_state: room_state)}
+
+    {:noreply,
+     assign(socket,
+       room_state: room_state,
+       countdown: countdown,
+       # Reset all voting flags when game starts
+       has_voted_start: false,
+       has_voted_play_again: false,
+       has_voted_lobby: false,
+       votes_start: 0,
+       votes_play_again: 0,
+       votes_lobby: 0
+     )}
   end
 
   @impl true
-  def handle_info({:game_started, %{text: text}}, socket) do
-    room_state = %{socket.assigns.room_state | status: :playing, current_text: text}
+  def handle_info({:countdown_update, count}, socket) do
+    {:noreply, assign(socket, countdown: count)}
+  end
+
+  @impl true
+  def handle_info({:vote_update, type, votes, player_count}, socket) do
+    case type do
+      :start ->
+        {:noreply, assign(socket, votes_start: votes, player_count: player_count)}
+
+      :play_again ->
+        {:noreply, assign(socket, votes_play_again: votes, player_count: player_count)}
+
+      :back_to_lobby ->
+        {:noreply, assign(socket, votes_lobby: votes, player_count: player_count)}
+    end
+  end
+
+  @impl true
+  def handle_info({:calculating_results, _}, socket) do
+    {:noreply, assign(socket, calculating_results: true)}
+  end
+
+  @impl true
+  def handle_info({:returned_to_lobby, _}, socket) do
+    room_state = Room.get_state(socket.assigns.code)
+
+    {:noreply,
+     assign(socket,
+       room_state: room_state,
+       has_voted_lobby: false,
+       has_voted_play_again: false,
+       votes_lobby: 0,
+       votes_play_again: 0
+     )}
+  end
+
+  @impl true
+  def handle_info({:game_started, %{words: words}}, socket) do
+    room_state = %{socket.assigns.room_state | status: :playing, current_text: words}
+
+    # Initialize player_progress for all players
+    player_progress =
+      Enum.into(socket.assigns.players, %{}, fn {player_id, _player} ->
+        {player_id, %{current_word_index: 0, typed_words: []}}
+      end)
 
     socket =
       socket
-      |> assign(room_state: room_state, started_at: System.monotonic_time(:millisecond))
+      |> assign(
+        room_state: room_state,
+        time_remaining: room_state.settings.timer_seconds,
+        current_word_index: 0,
+        typed_words: [],
+        current_input: "",
+        player_progress: player_progress
+      )
+      |> push_event("game_started", %{})
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:player_progress, player_id, progress}, socket) do
-    players = put_in(socket.assigns.players, [player_id, :progress], progress)
-    {:noreply, assign(socket, players: players)}
+  def handle_info({:timer_update, time_remaining}, socket) do
+    {:noreply, assign(socket, time_remaining: time_remaining)}
   end
 
   @impl true
-  def handle_info({:player_finished, player_id, stats}, socket) do
-    players = put_in(socket.assigns.players, [player_id, :stats], stats)
-    {:noreply, assign(socket, players: players)}
+  def handle_info({:timer_expired, _}, socket) do
+    {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:results, _results}, socket) do
+  def handle_info({:word_validated, player_id, word_index, is_correct}, socket) do
+    # Update opponent progress tracking with correct/incorrect info
+    player_progress =
+      Map.update(
+        socket.assigns.player_progress,
+        player_id,
+        %{current_word_index: word_index + 1, typed_words: [{word_index, is_correct}]},
+        fn progress ->
+          %{
+            progress
+            | current_word_index: word_index + 1,
+              typed_words: [{word_index, is_correct} | progress[:typed_words] || []]
+          }
+        end
+      )
+
+    {:noreply, assign(socket, player_progress: player_progress)}
+  end
+
+  @impl true
+  def handle_info({:results, results}, socket) do
     room_state = %{socket.assigns.room_state | status: :results}
-    {:noreply, assign(socket, room_state: room_state)}
+
+    {:noreply,
+     assign(socket,
+       room_state: room_state,
+       results: results,
+       calculating_results: false,
+       has_voted_start: false,
+       votes_start: 0
+     )}
   end
 
   @impl true
@@ -489,12 +826,100 @@ defmodule BlitzkeysWeb.RoomLive do
         {id, %{nickname: meta.nickname, joined_at: meta.joined_at}}
       end)
 
-    assign(socket, players: Map.merge(socket.assigns.players, new_players))
+    all_players = Map.merge(socket.assigns.players, new_players)
+
+    assign(socket, players: all_players, player_count: map_size(all_players))
   end
 
   defp remove_players(socket, leaves) do
     player_ids = Map.keys(leaves)
-    assign(socket, players: Map.drop(socket.assigns.players, player_ids))
+    remaining_players = Map.drop(socket.assigns.players, player_ids)
+    assign(socket, players: remaining_players, player_count: map_size(remaining_players))
+  end
+
+  # Calculate which lines to show (2 lines at a time, line-by-line scrolling)
+  # Each line has a fixed number of words (adjust based on screen width)
+  defp visible_lines(all_words, current_index, _typed_words) when is_list(all_words) do
+    words_per_line = 15
+
+    # Calculate which line the current word is on
+    current_line = div(current_index, words_per_line)
+
+    # Always show 2 lines: current line and next line
+    start_line = current_line
+    lines_to_show = 2
+
+    # Get words for these lines
+    start_word_index = start_line * words_per_line
+    words_to_show = lines_to_show * words_per_line
+
+    all_words
+    |> Enum.slice(start_word_index, words_to_show)
+    |> Enum.with_index(start_word_index)
+    |> Enum.chunk_every(words_per_line)
+    |> Enum.with_index(start_line)
+  end
+
+  defp visible_lines(_all_words, _current_index, _typed_words), do: []
+
+  # Calculate visible words for opponent mini-display (~25 words)
+  defp opponent_visible_words(all_words, opponent_index) when is_list(all_words) do
+    words_per_view = 25
+
+    # Center around opponent's current position
+    start_index = max(0, opponent_index - 3)
+
+    all_words
+    |> Enum.slice(start_index, words_per_view)
+    |> Enum.with_index(start_index)
+  end
+
+  defp opponent_visible_words(_all_words, _opponent_index), do: []
+
+  # Get underlines for opponents who are currently on this word
+  defp get_opponent_underlines(word_index, player_progress, players, current_player_id) do
+    players
+    |> Enum.reject(fn {id, _} -> id == current_player_id end)
+    |> Enum.with_index()
+    |> Enum.filter(fn {{opponent_id, _}, _idx} ->
+      opponent_current_index = player_progress[opponent_id][:current_word_index] || 0
+      opponent_current_index == word_index
+    end)
+    |> Enum.map(fn {{_id, _player}, idx} -> get_player_color(idx) end)
+  end
+
+  # Assign colors to players based on their index
+  defp get_player_color(index) do
+    colors = [
+      "rgb(59, 130, 246)",
+      # blue
+      "rgb(239, 68, 68)",
+      # red
+      "rgb(34, 197, 94)",
+      # green
+      "rgb(168, 85, 247)",
+      # purple
+      "rgb(249, 115, 22)",
+      # orange
+      "rgb(236, 72, 153)",
+      # pink
+      "rgb(20, 184, 166)",
+      # teal
+      "rgb(234, 179, 8)"
+      # yellow
+    ]
+
+    Enum.at(colors, rem(index, length(colors)))
+  end
+
+  # Get color for a specific player ID
+  defp get_color_for_player(player_id, players, current_player_id) do
+    players
+    |> Enum.reject(fn {id, _} -> id == current_player_id end)
+    |> Enum.with_index()
+    |> Enum.find_value(fn {{id, _}, idx} ->
+      if id == player_id, do: get_player_color(idx), else: nil
+    end) || "rgb(156, 163, 175)"
   end
 
   defp generate_player_id do
@@ -506,49 +931,5 @@ defmodule BlitzkeysWeb.RoomLive do
     nouns = ["Typer", "Racer", "Champ", "Master", "Ace", "Pro", "Wizard", "Ninja"]
 
     "#{Enum.random(adjectives)}#{Enum.random(nouns)}"
-  end
-
-  defp calculate_progress(input, target) do
-    if target == "" do
-      0
-    else
-      min(100, div(String.length(input) * 100, String.length(target)))
-    end
-  end
-
-  defp calculate_wpm(socket, input) do
-    if socket.assigns.started_at do
-      elapsed_minutes = (System.monotonic_time(:millisecond) - socket.assigns.started_at) / 60_000
-      words = String.split(input, " ") |> length()
-
-      if elapsed_minutes > 0 do
-        round(words / elapsed_minutes)
-      else
-        0
-      end
-    else
-      0
-    end
-  end
-
-  defp calculate_accuracy(input, target) do
-    if String.length(input) == 0 do
-      100
-    else
-      correct_chars =
-        String.graphemes(input)
-        |> Enum.zip(String.graphemes(target))
-        |> Enum.count(fn {a, b} -> a == b end)
-
-      round(correct_chars / String.length(input) * 100)
-    end
-  end
-
-  defp calculate_time(socket) do
-    if socket.assigns.started_at do
-      round((System.monotonic_time(:millisecond) - socket.assigns.started_at) / 1000)
-    else
-      0
-    end
   end
 end

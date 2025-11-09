@@ -30,6 +30,24 @@ const TypingInput = {
   mounted() {
     this.el.focus()
     
+    // Handle keydown for spacebar validation
+    this.el.addEventListener("keydown", (e) => {
+      if (e.key === " " && this.el.value.trim() !== "") {
+        e.preventDefault()
+        
+        // Send word for validation
+        this.pushEvent("validate_word", { word: this.el.value.trim() })
+        
+        // Clear input immediately for smooth UX
+        this.el.value = ""
+      }
+    })
+    
+    // Handle input changes
+    this.el.addEventListener("input", (e) => {
+      this.pushEvent("update_input", { value: e.target.value })
+    })
+    
     // Auto-focus when game starts
     this.handleEvent("game_started", () => {
       this.el.focus()

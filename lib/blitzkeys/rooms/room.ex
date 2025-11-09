@@ -44,9 +44,19 @@ defmodule Blitzkeys.Rooms.Room do
     code |> via_tuple() |> GenServer.call({:update_settings, settings})
   end
 
-  @doc "Starts the game countdown"
-  def start_game(code) do
-    code |> via_tuple() |> GenServer.call(:start_game)
+  @doc "Vote to start the game"
+  def vote_start(code, player_id) do
+    code |> via_tuple() |> GenServer.call({:vote_start, player_id})
+  end
+
+  @doc "Vote to play again"
+  def vote_play_again(code, player_id) do
+    code |> via_tuple() |> GenServer.call({:vote_play_again, player_id})
+  end
+
+  @doc "Vote to return to lobby"
+  def vote_back_to_lobby(code, player_id) do
+    code |> via_tuple() |> GenServer.call({:vote_back_to_lobby, player_id})
   end
 
   @doc "Validates a typed word and updates player progress"
@@ -73,7 +83,11 @@ defmodule Blitzkeys.Rooms.Room do
       scores: %{},
       started_at: nil,
       timer_ref: nil,
-      time_remaining: nil
+      time_remaining: nil,
+      votes_to_start: MapSet.new(),
+      votes_to_play_again: MapSet.new(),
+      votes_to_lobby: MapSet.new(),
+      countdown: nil
     }
 
     Logger.info("Room #{code} created")
@@ -100,7 +114,71 @@ defmodule Blitzkeys.Rooms.Room do
   end
 
   @impl true
-  def handle_call(:start_game, _from, %{status: :lobby} = state) do
+  def handle_call({:vote_start, player_id}, _from, %{status: :lobby} = state) do
+    votes = MapSet.put(state.votes_to_start, player_id)
+    new_state = %{state | votes_to_start: votes}
+
+    # Get current player count from Presence
+    player_count =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> map_size()
+
+    # Broadcast vote update
+    broadcast(state.code, {:vote_update, :start, MapSet.size(votes), player_count})
+
+    # Check if all players have voted
+    if MapSet.size(votes) >= player_count && player_count >= 2 do
+      # Everyone voted! Start the game
+      send(self(), :all_voted_start)
+      {:reply, :ok, new_state, @idle_timeout}
+    else
+      {:reply, :ok, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call({:vote_play_again, player_id}, _from, %{status: :results} = state) do
+    votes = MapSet.put(state.votes_to_play_again, player_id)
+    new_state = %{state | votes_to_play_again: votes}
+
+    player_count =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> map_size()
+
+    broadcast(state.code, {:vote_update, :play_again, MapSet.size(votes), player_count})
+
+    if MapSet.size(votes) >= player_count && player_count >= 2 do
+      send(self(), :all_voted_play_again)
+      {:reply, :ok, new_state, @idle_timeout}
+    else
+      {:reply, :ok, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call({:vote_back_to_lobby, player_id}, _from, %{status: :results} = state) do
+    votes = MapSet.put(state.votes_to_lobby, player_id)
+    new_state = %{state | votes_to_lobby: votes}
+
+    player_count =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> map_size()
+
+    broadcast(state.code, {:vote_update, :back_to_lobby, MapSet.size(votes), player_count})
+
+    if MapSet.size(votes) >= player_count && player_count >= 1 do
+      send(self(), :all_voted_lobby)
+      {:reply, :ok, new_state, @idle_timeout}
+    else
+      {:reply, :ok, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call(:old_start_game, _from, %{status: :lobby} = state) do
     # Get current players from Presence
     players =
       "room:#{state.code}"
@@ -189,7 +267,79 @@ defmodule Blitzkeys.Rooms.Room do
   end
 
   @impl true
-  def handle_info(:countdown_tick, %{status: :countdown} = state) do
+  def handle_info(:all_voted_start, %{status: :lobby} = state) do
+    # Get current players from Presence
+    players =
+      "room:#{state.code}"
+      |> Presence.list()
+      |> Enum.into(%{}, fn {id, _data} -> {id, %{}} end)
+
+    if map_size(players) < 2 do
+      {:noreply, state, @idle_timeout}
+    else
+      # Generate text based on settings
+      text = generate_text(state.settings)
+
+      # Initialize player tracking with word-based progress
+      players_with_progress =
+        Enum.into(players, %{}, fn {id, _} ->
+          {id, %{current_word_index: 0, correct_words: [], incorrect_words: []}}
+        end)
+
+      new_state = %{
+        state
+        | status: :countdown,
+          current_text: text,
+          round: state.round + 1,
+          players: players_with_progress,
+          timer_ref: nil,
+          time_remaining: state.settings.timer_seconds,
+          votes_to_start: MapSet.new(),
+          countdown: 3
+      }
+
+      broadcast(state.code, {:game_starting, %{countdown: 3}})
+      schedule_countdown_tick(state.code, 2)
+
+      {:noreply, new_state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_info(:all_voted_play_again, %{status: :results} = state) do
+    # Reset and start new game
+    send(self(), :all_voted_start)
+    new_state = %{state | status: :lobby, votes_to_play_again: MapSet.new()}
+    {:noreply, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info(:all_voted_lobby, %{status: :results} = state) do
+    # Return to lobby
+    new_state = %{
+      state
+      | status: :lobby,
+        round: 0,
+        scores: %{},
+        votes_to_lobby: MapSet.new(),
+        votes_to_play_again: MapSet.new()
+    }
+
+    broadcast(state.code, {:returned_to_lobby, %{}})
+    {:noreply, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info({:countdown_tick, count}, %{status: :countdown} = state) when count > 0 do
+    # Continue countdown
+    new_state = %{state | countdown: count}
+    broadcast(state.code, {:countdown_update, count})
+    schedule_countdown_tick(state.code, count - 1)
+    {:noreply, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_info({:countdown_tick, 0}, %{status: :countdown} = state) do
     # Start the game timer
     timer_ref = schedule_timer_tick(state.code)
 
@@ -197,7 +347,8 @@ defmodule Blitzkeys.Rooms.Room do
       state
       | status: :playing,
         started_at: System.monotonic_time(:millisecond),
-        timer_ref: timer_ref
+        timer_ref: timer_ref,
+        countdown: nil
     }
 
     broadcast(state.code, {:game_started, %{words: state.current_text}})
@@ -208,23 +359,25 @@ defmodule Blitzkeys.Rooms.Room do
   def handle_info(:timer_tick, %{status: :playing} = state) do
     new_time = state.time_remaining - 1
 
+    # Broadcast time update every second (including when it reaches 0)
+    broadcast(state.code, {:timer_update, new_time})
+
     if new_time <= 0 do
       # Time's up! End the game
       Logger.info("Timer expired for room #{state.code}")
       if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
 
+      # Show loading state briefly
+      broadcast(state.code, {:calculating_results, %{}})
+
       new_state = %{state | status: :results, time_remaining: 0, timer_ref: nil}
       schedule_results(state.code)
-      broadcast(state.code, {:timer_expired, %{}})
 
       {:noreply, new_state, @idle_timeout}
     else
       # Continue countdown
       timer_ref = schedule_timer_tick(state.code)
       new_state = %{state | time_remaining: new_time, timer_ref: timer_ref}
-
-      # Broadcast time update every second
-      broadcast(state.code, {:timer_update, new_time})
 
       {:noreply, new_state, @idle_timeout}
     end
@@ -246,9 +399,9 @@ defmodule Blitzkeys.Rooms.Room do
       schedule_next_round(state.code)
       {:noreply, state, @idle_timeout}
     else
-      # Game over
+      # Game over - stay in :results status so players can vote
       broadcast(state.code, {:game_over, results})
-      {:noreply, %{state | status: :lobby}, @idle_timeout}
+      {:noreply, state, @idle_timeout}
     end
   end
 
@@ -294,6 +447,10 @@ defmodule Blitzkeys.Rooms.Room do
 
   defp schedule_countdown(code) do
     Process.send_after(whereis(code), :countdown_tick, 3000)
+  end
+
+  defp schedule_countdown_tick(code, count) do
+    Process.send_after(whereis(code), {:countdown_tick, count}, 1000)
   end
 
   defp schedule_timer_tick(code) do
