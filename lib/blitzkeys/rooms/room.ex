@@ -105,6 +105,10 @@ defmodule Blitzkeys.Rooms.Room do
     }
 
     Logger.info("Room #{code} created")
+
+    # Notify lobby that a new room was created
+    PubSub.broadcast(Blitzkeys.PubSub, "lobby", {:room_created, code})
+
     {:ok, state, @idle_timeout}
   end
 
@@ -373,6 +377,7 @@ defmodule Blitzkeys.Rooms.Room do
       }
 
       broadcast(state.code, {:game_starting, %{countdown: 3}})
+      broadcast_lobby_update(state.code)
       schedule_countdown_tick(state.code, 2)
 
       {:noreply, new_state, @idle_timeout}
@@ -399,6 +404,7 @@ defmodule Blitzkeys.Rooms.Room do
     }
 
     broadcast(state.code, {:returned_to_lobby, %{}})
+    broadcast_lobby_update(state.code)
     {:noreply, new_state, @idle_timeout}
   end
 
@@ -425,6 +431,7 @@ defmodule Blitzkeys.Rooms.Room do
     }
 
     broadcast(state.code, {:game_started, %{words: state.current_text}})
+    broadcast_lobby_update(state.code)
     {:noreply, new_state, @idle_timeout}
   end
 
@@ -444,6 +451,7 @@ defmodule Blitzkeys.Rooms.Room do
       broadcast(state.code, {:calculating_results, %{}})
 
       new_state = %{state | status: :results, time_remaining: 0, timer_ref: nil}
+      broadcast_lobby_update(state.code)
       schedule_results(state.code)
 
       {:noreply, new_state, @idle_timeout}
@@ -486,14 +494,20 @@ defmodule Blitzkeys.Rooms.Room do
   @impl true
   def handle_info(:timeout, state) do
     Logger.info("Room #{state.code} timed out due to inactivity")
+    broadcast_lobby_update(state.code)
     {:stop, :normal, state}
   end
 
   @impl true
-  def handle_info(%{event: "presence_diff", payload: %{joins: _joins, leaves: leaves}}, state) do
+  def handle_info(%{event: "presence_diff", payload: %{joins: joins, leaves: leaves}}, state) do
     # Check if creator left and reassign if needed
     if map_size(leaves) > 0 do
       send(self(), :check_creator_async)
+    end
+
+    # Notify lobby of player count changes
+    if map_size(joins) > 0 or map_size(leaves) > 0 do
+      PubSub.broadcast(Blitzkeys.PubSub, "lobby", {:room_updated, state.code})
     end
 
     {:noreply, state, @idle_timeout}
@@ -521,13 +535,18 @@ defmodule Blitzkeys.Rooms.Room do
     PubSub.broadcast(Blitzkeys.PubSub, "room:#{code}", message)
   end
 
+  defp broadcast_lobby_update(code) do
+    PubSub.broadcast(Blitzkeys.PubSub, "lobby", {:room_updated, code})
+  end
+
   defp default_settings(custom_settings) do
     %{
       language: :english,
       total_rounds: 1,
       scoring_mode: :wpm,
       text_difficulty: :common_words,
-      timer_seconds: 60
+      timer_seconds: 60,
+      is_public: true
     }
     |> Map.merge(custom_settings)
   end

@@ -323,6 +323,25 @@ defmodule BlitzkeysWeb.RoomLive do
                     </option>
                   </select>
                 </div>
+
+                <div class="form-control">
+                  <label class="label cursor-pointer justify-start gap-4">
+                    <input
+                      type="checkbox"
+                      name="is_public"
+                      class="toggle toggle-primary flex-shrink-0"
+                      checked={Map.get(@room_state.settings, :is_public, true)}
+                      disabled={!@is_creator}
+                      value="true"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <span class="label-text font-semibold">Public Room</span>
+                      <p class="text-xs text-base-content/60 break-words">
+                        When enabled, this room will be visible in the public rooms list
+                      </p>
+                    </div>
+                  </label>
+                </div>
               </div>
             </form>
 
@@ -722,6 +741,7 @@ defmodule BlitzkeysWeb.RoomLive do
       |> maybe_add_setting(params, "difficulty", :text_difficulty, &String.to_existing_atom/1)
       |> maybe_add_setting(params, "timer", :timer_seconds, &String.to_integer/1)
       |> maybe_add_setting(params, "scoring", :scoring_mode, &String.to_existing_atom/1)
+      |> maybe_add_boolean_setting(params, "is_public", :is_public)
       |> Enum.into(%{})
 
     if map_size(settings_updates) > 0 do
@@ -1179,6 +1199,12 @@ defmodule BlitzkeysWeb.RoomLive do
     else
       acc
     end
+  end
+
+  defp maybe_add_boolean_setting(acc, params, param_key, setting_key) do
+    # Checkboxes send "true" when checked, and don't send the key at all when unchecked
+    value = Map.get(params, param_key, "false") == "true"
+    [{setting_key, value} | acc]
   end
 
   defp generate_practice_text do
