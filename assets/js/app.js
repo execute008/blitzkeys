@@ -62,8 +62,31 @@ const TypingInput = {
   }
 }
 
+const PracticeInput = {
+  mounted() {
+    // Handle keydown for spacebar and Enter key validation
+    this.el.addEventListener("keydown", (e) => {
+      if ((e.key === " " || e.key === "Enter") && this.el.value.trim() !== "") {
+        e.preventDefault()
+        
+        // Send word for validation
+        this.pushEvent("practice_validate_word", { word: this.el.value.trim() })
+        
+        // Clear input immediately for smooth UX
+        this.el.value = ""
+      }
+    })
+    
+    // Handle input changes
+    this.el.addEventListener("input", (e) => {
+      this.pushEvent("update_practice_input", { value: e.target.value })
+    })
+  }
+}
+
 const Hooks = {
   TypingInput,
+  PracticeInput,
   ...colocatedHooks
 }
 

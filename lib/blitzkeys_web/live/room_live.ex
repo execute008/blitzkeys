@@ -63,7 +63,15 @@ defmodule BlitzkeysWeb.RoomLive do
               # Loading state
               calculating_results: false,
               # Creator check
-              is_creator: false
+              is_creator: false,
+              # Practice mode
+              practice_text: generate_practice_text(),
+              practice_input: "",
+              practice_word_index: 0,
+              practice_typed_words: [],
+              practice_started_at: nil,
+              practice_wpm: 0,
+              practice_accuracy: 100
             )
             |> handle_presence_diff(Presence.list("room:#{code}"))
             |> update_creator_status()
@@ -92,7 +100,14 @@ defmodule BlitzkeysWeb.RoomLive do
              has_voted_lobby: false,
              countdown: nil,
              calculating_results: false,
-             is_creator: false
+             is_creator: false,
+             practice_text: [],
+             practice_input: "",
+             practice_word_index: 0,
+             practice_typed_words: [],
+             practice_started_at: nil,
+             practice_wpm: 0,
+             practice_accuracy: 100
            )}
         end
     end
@@ -144,195 +159,265 @@ defmodule BlitzkeysWeb.RoomLive do
   # Lobby View Component
   defp lobby_view(assigns) do
     ~H"""
-    <div class="grid md:grid-cols-2 gap-8">
-      <%!-- Players List --%>
-      <div class="card bg-base-200">
-        <div class="card-body">
-          <h2 class="card-title">
-            <.icon name="hero-users" class="w-6 h-6" /> Players ({map_size(@players)})
-          </h2>
-          <div class="space-y-2">
-            <%= for {id, player} <- @players do %>
-              <div class="flex items-center justify-between p-3 bg-base-300 rounded-lg">
-                <div class="flex items-center gap-3">
-                  <div class="avatar placeholder">
-                    <div class="bg-primary text-primary-content rounded-full w-10">
-                      <span class="text-lg">{String.first(player.nickname)}</span>
+    <div class="space-y-8">
+      <div class="grid md:grid-cols-2 gap-8">
+        <%!-- Players List --%>
+        <div class="card bg-base-200">
+          <div class="card-body">
+            <h2 class="card-title">
+              <.icon name="hero-users" class="w-6 h-6" /> Players ({map_size(@players)})
+            </h2>
+            <div class="space-y-2">
+              <%= for {id, player} <- @players do %>
+                <div class="flex items-center justify-between p-3 bg-base-300 rounded-lg">
+                  <div class="flex items-center gap-3">
+                    <div class="avatar placeholder">
+                      <div class="bg-primary text-primary-content rounded-full w-10">
+                        <span class="text-lg">{String.first(player.nickname)}</span>
+                      </div>
                     </div>
+                    <span class="font-medium">{player.nickname}</span>
+                    <%= if id == @player_id do %>
+                      <span class="badge badge-sm badge-primary">You</span>
+                    <% end %>
+                    <%= if id == @room_state.creator_id do %>
+                      <span class="badge badge-sm badge-warning">
+                        <.icon name="hero-star" class="w-3 h-3 mr-1" /> Creator
+                      </span>
+                    <% end %>
                   </div>
-                  <span class="font-medium">{player.nickname}</span>
-                  <%= if id == @player_id do %>
-                    <span class="badge badge-sm badge-primary">You</span>
-                  <% end %>
-                  <%= if id == @room_state.creator_id do %>
-                    <span class="badge badge-sm badge-warning">
-                      <.icon name="hero-star" class="w-3 h-3 mr-1" /> Creator
-                    </span>
-                  <% end %>
+                  <div class="w-3 h-3 rounded-full bg-success"></div>
                 </div>
-                <div class="w-3 h-3 rounded-full bg-success"></div>
+              <% end %>
+            </div>
+
+            <%= if map_size(@players) < 2 do %>
+              <div class="alert alert-info mt-4">
+                <.icon name="hero-information-circle" class="w-5 h-5" />
+                <span>Waiting for at least one more player...</span>
               </div>
             <% end %>
           </div>
+        </div>
 
-          <%= if map_size(@players) < 2 do %>
-            <div class="alert alert-info mt-4">
-              <.icon name="hero-information-circle" class="w-5 h-5" />
-              <span>Waiting for at least one more player...</span>
-            </div>
-          <% end %>
+        <%!-- Settings --%>
+        <div class="card bg-base-200">
+          <div class="card-body">
+            <h2 class="card-title">
+              <.icon name="hero-cog-6-tooth" class="w-6 h-6" /> Game Settings
+            </h2>
+
+            <%= if !@is_creator do %>
+              <div class="alert alert-info">
+                <.icon name="hero-information-circle" class="w-5 h-5" />
+                <span>Only the room creator can change settings</span>
+              </div>
+            <% end %>
+
+            <form phx-change="update_settings" id="settings-form">
+              <div class="space-y-4">
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">Language</span>
+                  </label>
+                  <select
+                    class="select select-bordered"
+                    name="language"
+                    disabled={!@is_creator}
+                  >
+                    <option value="english" selected={@room_state.settings.language == :english}>
+                      English
+                    </option>
+                    <option value="spanish" selected={@room_state.settings.language == :spanish}>
+                      Spanish
+                    </option>
+                    <option value="german" selected={@room_state.settings.language == :german}>
+                      German
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">Rounds</span>
+                  </label>
+                  <select
+                    class="select select-bordered"
+                    name="rounds"
+                    disabled={!@is_creator}
+                  >
+                    <option value="1" selected={@room_state.settings.total_rounds == 1}>
+                      Best of 1
+                    </option>
+                    <option value="3" selected={@room_state.settings.total_rounds == 3}>
+                      Best of 3
+                    </option>
+                    <option value="5" selected={@room_state.settings.total_rounds == 5}>
+                      Best of 5
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">Difficulty</span>
+                  </label>
+                  <select
+                    class="select select-bordered"
+                    name="difficulty"
+                    disabled={!@is_creator}
+                  >
+                    <option
+                      value="common_words"
+                      selected={@room_state.settings.text_difficulty == :common_words}
+                    >
+                      Common Words
+                    </option>
+                    <option value="quotes" selected={@room_state.settings.text_difficulty == :quotes}>
+                      Quotes
+                    </option>
+                    <option value="code" selected={@room_state.settings.text_difficulty == :code}>
+                      Code
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">Timer Duration</span>
+                  </label>
+                  <select
+                    class="select select-bordered"
+                    name="timer"
+                    disabled={!@is_creator}
+                  >
+                    <option value="30" selected={@room_state.settings.timer_seconds == 30}>
+                      30 seconds
+                    </option>
+                    <option value="60" selected={@room_state.settings.timer_seconds == 60}>
+                      60 seconds
+                    </option>
+                    <option value="120" selected={@room_state.settings.timer_seconds == 120}>
+                      2 minutes
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-control">
+                  <label class="label">
+                    <span class="label-text">Scoring Mode</span>
+                  </label>
+                  <select
+                    class="select select-bordered"
+                    name="scoring"
+                    disabled={!@is_creator}
+                  >
+                    <option value="wpm" selected={@room_state.settings.scoring_mode == :wpm}>
+                      Words Per Minute
+                    </option>
+                    <option
+                      value="wpm_accuracy"
+                      selected={@room_state.settings.scoring_mode == :wpm_accuracy}
+                    >
+                      WPM + Accuracy
+                    </option>
+                  </select>
+                </div>
+              </div>
+            </form>
+
+            <%= if map_size(@players) >= 2 do %>
+              <div class="mt-6">
+                <button
+                  phx-click="vote_start"
+                  class={[
+                    "btn btn-block",
+                    if(@has_voted_start, do: "btn-success", else: "btn-primary")
+                  ]}
+                  disabled={@has_voted_start}
+                >
+                  <%= if @has_voted_start do %>
+                    <.icon name="hero-check-circle" class="w-5 h-5 mr-2" /> Ready!
+                  <% else %>
+                    <.icon name="hero-play" class="w-5 h-5 mr-2" /> Ready to Start
+                  <% end %>
+                </button>
+                <%= if @votes_start > 0 do %>
+                  <p class="text-center text-sm mt-2 text-base-content/60">
+                    {@votes_start}/{@player_count} players ready
+                  </p>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
         </div>
       </div>
-
-      <%!-- Settings --%>
+      <%!-- Practice Range --%>
       <div class="card bg-base-200">
         <div class="card-body">
-          <h2 class="card-title">
-            <.icon name="hero-cog-6-tooth" class="w-6 h-6" /> Game Settings
-          </h2>
-
-          <%= if !@is_creator do %>
-            <div class="alert alert-info">
-              <.icon name="hero-information-circle" class="w-5 h-5" />
-              <span>Only the room creator can change settings</span>
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="card-title">
+              <.icon name="hero-academic-cap" class="w-6 h-6" /> Practice Range
+            </h2>
+            <button phx-click="reset_practice" class="btn btn-sm btn-ghost">
+              <.icon name="hero-arrow-path" class="w-4 h-4 mr-1" /> New Text
+            </button>
+          </div>
+          <%!-- Practice Stats --%>
+          <%= if @practice_started_at do %>
+            <div class="flex gap-4 mb-4">
+              <div class="stat bg-base-300 rounded-lg py-2 px-4 flex-1">
+                <div class="stat-title text-xs">WPM</div>
+                <div class="stat-value text-2xl">{@practice_wpm}</div>
+              </div>
+              <div class="stat bg-base-300 rounded-lg py-2 px-4 flex-1">
+                <div class="stat-title text-xs">Accuracy</div>
+                <div class="stat-value text-2xl">{@practice_accuracy}%</div>
+              </div>
+              <div class="stat bg-base-300 rounded-lg py-2 px-4 flex-1">
+                <div class="stat-title text-xs">Words</div>
+                <div class="stat-value text-2xl">{@practice_word_index}</div>
+              </div>
             </div>
           <% end %>
+          <%!-- Practice Text Display --%>
+          <div class="bg-base-300 p-4 rounded-lg mb-4 min-h-[100px]">
+            <div class="flex flex-wrap gap-2 font-mono text-lg">
+              <%= for {word, idx} <- get_practice_visible_words(@practice_text, @practice_word_index) do %>
+                <% {_typed_word, was_correct} =
+                  Enum.find(@practice_typed_words, {nil, nil}, fn {w_idx, _} -> w_idx == idx end) %>
+                <span class={[
+                  "whitespace-nowrap transition-colors",
+                  cond do
+                    idx < @practice_word_index && was_correct == true ->
+                      "text-success font-semibold"
 
-          <form phx-change="update_settings" id="settings-form">
-            <div class="space-y-4">
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Language</span>
-                </label>
-                <select
-                  class="select select-bordered"
-                  name="language"
-                  disabled={!@is_creator}
-                >
-                  <option value="english" selected={@room_state.settings.language == :english}>
-                    English
-                  </option>
-                  <option value="spanish" selected={@room_state.settings.language == :spanish}>
-                    Spanish
-                  </option>
-                  <option value="german" selected={@room_state.settings.language == :german}>
-                    German
-                  </option>
-                </select>
-              </div>
+                    idx < @practice_word_index && was_correct == false ->
+                      "text-error line-through font-semibold"
 
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Rounds</span>
-                </label>
-                <select
-                  class="select select-bordered"
-                  name="rounds"
-                  disabled={!@is_creator}
-                >
-                  <option value="1" selected={@room_state.settings.total_rounds == 1}>
-                    Best of 1
-                  </option>
-                  <option value="3" selected={@room_state.settings.total_rounds == 3}>
-                    Best of 3
-                  </option>
-                  <option value="5" selected={@room_state.settings.total_rounds == 5}>
-                    Best of 5
-                  </option>
-                </select>
-              </div>
+                    idx == @practice_word_index ->
+                      "border-b-2 border-primary font-bold"
 
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Difficulty</span>
-                </label>
-                <select
-                  class="select select-bordered"
-                  name="difficulty"
-                  disabled={!@is_creator}
-                >
-                  <option
-                    value="common_words"
-                    selected={@room_state.settings.text_difficulty == :common_words}
-                  >
-                    Common Words
-                  </option>
-                  <option value="quotes" selected={@room_state.settings.text_difficulty == :quotes}>
-                    Quotes
-                  </option>
-                  <option value="code" selected={@room_state.settings.text_difficulty == :code}>
-                    Code
-                  </option>
-                </select>
-              </div>
-
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Timer Duration</span>
-                </label>
-                <select
-                  class="select select-bordered"
-                  name="timer"
-                  disabled={!@is_creator}
-                >
-                  <option value="30" selected={@room_state.settings.timer_seconds == 30}>
-                    30 seconds
-                  </option>
-                  <option value="60" selected={@room_state.settings.timer_seconds == 60}>
-                    60 seconds
-                  </option>
-                  <option value="120" selected={@room_state.settings.timer_seconds == 120}>
-                    2 minutes
-                  </option>
-                </select>
-              </div>
-
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Scoring Mode</span>
-                </label>
-                <select
-                  class="select select-bordered"
-                  name="scoring"
-                  disabled={!@is_creator}
-                >
-                  <option value="wpm" selected={@room_state.settings.scoring_mode == :wpm}>
-                    Words Per Minute
-                  </option>
-                  <option
-                    value="wpm_accuracy"
-                    selected={@room_state.settings.scoring_mode == :wpm_accuracy}
-                  >
-                    WPM + Accuracy
-                  </option>
-                </select>
-              </div>
-            </div>
-          </form>
-
-          <%= if map_size(@players) >= 2 do %>
-            <div class="mt-6">
-              <button
-                phx-click="vote_start"
-                class={[
-                  "btn btn-block",
-                  if(@has_voted_start, do: "btn-success", else: "btn-primary")
-                ]}
-                disabled={@has_voted_start}
-              >
-                <%= if @has_voted_start do %>
-                  <.icon name="hero-check-circle" class="w-5 h-5 mr-2" /> Ready!
-                <% else %>
-                  <.icon name="hero-play" class="w-5 h-5 mr-2" /> Ready to Start
-                <% end %>
-              </button>
-              <%= if @votes_start > 0 do %>
-                <p class="text-center text-sm mt-2 text-base-content/60">
-                  {@votes_start}/{@player_count} players ready
-                </p>
+                    true ->
+                      "text-base-content/40"
+                  end
+                ]}>
+                  {word}
+                </span>
               <% end %>
             </div>
-          <% end %>
+          </div>
+          <%!-- Practice Input --%>
+          <input
+            id="practice-input"
+            type="text"
+            phx-hook="PracticeInput"
+            class="input input-bordered input-lg w-full font-mono text-xl"
+            placeholder="Start typing to practice..."
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
         </div>
       </div>
     </div>
@@ -699,6 +784,73 @@ defmodule BlitzkeysWeb.RoomLive do
     {:noreply, assign(socket, current_input: value)}
   end
 
+  @impl true
+  def handle_event("update_practice_input", %{"value" => value}, socket) do
+    {:noreply, assign(socket, practice_input: value)}
+  end
+
+  @impl true
+  def handle_event("practice_validate_word", %{"word" => typed_word}, socket) do
+    current_index = socket.assigns.practice_word_index
+    correct_word = Enum.at(socket.assigns.practice_text, current_index)
+    is_correct = typed_word == correct_word
+
+    # Start timer on first word
+    started_at = socket.assigns.practice_started_at || System.monotonic_time(:millisecond)
+
+    # Update typed words
+    typed_words = [{current_index, is_correct} | socket.assigns.practice_typed_words]
+
+    # Calculate stats
+    correct_count = Enum.count(typed_words, fn {_, correct} -> correct end)
+    total_count = length(typed_words)
+    accuracy = if total_count > 0, do: round(correct_count / total_count * 100), else: 100
+
+    # Fix WPM calculation: elapsed_time in minutes
+    elapsed_milliseconds = System.monotonic_time(:millisecond) - started_at
+    elapsed_minutes = elapsed_milliseconds / 60_000
+    wpm = if elapsed_minutes > 0, do: round(correct_count / elapsed_minutes), else: 0
+
+    # Check if we need to add more words (make it endless)
+    next_index = current_index + 1
+    practice_text = socket.assigns.practice_text
+
+    practice_text =
+      if next_index >= length(practice_text) - 5 do
+        # Add more words when approaching the end (5 words before end)
+        practice_text ++ generate_practice_text()
+      else
+        practice_text
+      end
+
+    socket =
+      assign(socket,
+        practice_input: "",
+        practice_word_index: next_index,
+        practice_typed_words: typed_words,
+        practice_started_at: started_at,
+        practice_wpm: wpm,
+        practice_accuracy: accuracy,
+        practice_text: practice_text
+      )
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("reset_practice", _params, socket) do
+    {:noreply,
+     assign(socket,
+       practice_text: generate_practice_text(),
+       practice_input: "",
+       practice_word_index: 0,
+       practice_typed_words: [],
+       practice_started_at: nil,
+       practice_wpm: 0,
+       practice_accuracy: 100
+     )}
+  end
+
   # PubSub Message Handlers
 
   @impl true
@@ -812,7 +964,12 @@ defmodule BlitzkeysWeb.RoomLive do
         current_word_index: 0,
         typed_words: [],
         current_input: "",
-        player_progress: player_progress
+        player_progress: player_progress,
+        # Reset practice mode
+        practice_input: "",
+        practice_word_index: 0,
+        practice_typed_words: [],
+        practice_started_at: nil
       )
       |> push_event("game_started", %{})
 
@@ -1022,5 +1179,73 @@ defmodule BlitzkeysWeb.RoomLive do
     else
       acc
     end
+  end
+
+  defp generate_practice_text do
+    # Generate a small set of common words for practice
+    words = [
+      "the",
+      "be",
+      "to",
+      "of",
+      "and",
+      "a",
+      "in",
+      "that",
+      "have",
+      "it",
+      "for",
+      "not",
+      "on",
+      "with",
+      "he",
+      "as",
+      "you",
+      "do",
+      "at",
+      "this",
+      "but",
+      "his",
+      "by",
+      "from",
+      "they",
+      "we",
+      "say",
+      "her",
+      "she",
+      "or",
+      "an",
+      "will",
+      "my",
+      "one",
+      "all",
+      "would",
+      "there",
+      "their",
+      "what",
+      "so",
+      "up",
+      "out",
+      "if",
+      "about",
+      "who",
+      "get",
+      "which",
+      "go",
+      "me"
+    ]
+
+    # Return 30 random words
+    Enum.take_random(words, 30)
+  end
+
+  defp get_practice_visible_words(practice_text, current_index) do
+    # Show 40 words: some before current, current, and many after
+    start_index = max(0, current_index - 5)
+    words_to_show = 40
+
+    practice_text
+    |> Enum.slice(start_index, words_to_show)
+    |> Enum.with_index(start_index)
   end
 end
