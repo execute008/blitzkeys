@@ -12,7 +12,7 @@ defmodule BlitzkeysWeb.HomeLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <div class="w-screen h-90vh flex items-center justify-center px-4 fixed top-10vh left-0">
+      <div class="w-full flex items-center justify-center px-4 left-0 ">
         <div class="max-w-2xl w-full">
           <%!-- Hero Section --%>
           <div class="text-center mb-12">
