@@ -20,6 +20,7 @@ defmodule BlitzkeysWeb.Router do
     live "/", HomeLive
     live "/rooms", PublicRoomsLive
     live "/room/:code", RoomLive
+    live "/vim-learning", VimLearningLive
   end
 
   # Other scopes may use custom stacks.

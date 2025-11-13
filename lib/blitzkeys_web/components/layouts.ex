@@ -64,6 +64,12 @@ defmodule BlitzkeysWeb.Layouts do
       <div class="flex-none">
         <ul class="flex flex-column px-1 space-x-4 items-center">
           <li>
+            <.link navigate={~p"/vim-learning"} class="btn btn-ghost">
+              <.icon name="hero-academic-cap" class="w-5 h-5" />
+              Vim Learning
+            </.link>
+          </li>
+          <li>
             <a
               href="https://freye.tech"
               target="_blank"
